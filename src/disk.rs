@@ -4,6 +4,7 @@ use chrono::Utc;
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringDecayParameters};
 use lightning::util::logger::{Logger, Record};
 use lightning::util::ser::{Readable, ReadableArgs, Writer};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
@@ -25,6 +26,8 @@ pub(crate) const INBOUND_PAYMENTS_FNAME: &str = "inbound_payments";
 pub(crate) const OUTBOUND_PAYMENTS_FNAME: &str = "outbound_payments";
 
 pub(crate) const CHANNEL_PEER_DATA: &str = "channel_peer_data";
+
+pub(crate) const CHANNEL_METADATA: &str = "channel_metadata";
 
 pub(crate) const OUTPUT_SPENDER_TXES: &str = "output_spender_txes";
 
@@ -221,4 +224,68 @@ pub(crate) fn read_channel_ids_info(path: &Path) -> ChannelIdsMap {
     ChannelIdsMap {
         channel_ids: HashMap::new(),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ChannelMetadata {
+    pub(crate) channel_id: String,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
+}
+
+pub(crate) fn persist_channel_metadata(
+    path: &Path,
+    channel_id: &str,
+    created_at: u64,
+    updated_at: u64,
+) -> Result<(), APIError> {
+    let metadata = ChannelMetadata {
+        channel_id: channel_id.to_string(),
+        created_at,
+        updated_at,
+    };
+    
+    let mut channel_metadata = if path.exists() {
+        read_channel_metadata_map(path)?
+    } else {
+        HashMap::new()
+    };
+    
+    channel_metadata.insert(channel_id.to_string(), metadata);
+    
+    let mut tmp_path = path.to_path_buf();
+    tmp_path.set_extension("ctmp");
+    
+    let all_metadata: Vec<ChannelMetadata> = channel_metadata.into_values().collect();
+    let all_metadata_json = serde_json::to_string_pretty(&all_metadata)?;
+    
+    fs::write(&tmp_path, all_metadata_json.as_bytes())?;
+    fs::rename(tmp_path, path)?;
+    
+    tracing::debug!("persisted channel metadata (channel_id: {channel_id}, created_at: {created_at}, updated_at: {updated_at})");
+    Ok(())
+}
+
+
+
+pub(crate) fn read_channel_metadata_map(
+    path: &Path,
+) -> Result<HashMap<String, ChannelMetadata>, APIError> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    
+    let content = fs::read_to_string(path)?;
+    if content.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    
+    let metadata_list: Vec<ChannelMetadata> = serde_json::from_str(&content)?;
+    let mut metadata_map = HashMap::new();
+    
+    for metadata in metadata_list {
+        metadata_map.insert(metadata.channel_id.clone(), metadata);
+    }
+    
+    Ok(metadata_map)
 }

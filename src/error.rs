@@ -198,6 +198,9 @@ pub enum APIError {
     #[error(transparent)]
     JsonExtractorRejection(#[from] JsonRejection),
 
+    #[error("JSON parsing error: {0}")]
+    JsonParsing(#[from] serde_json::Error),
+
     #[error("Node is locked (hint: call unlock)")]
     LockedNode,
 
@@ -385,6 +388,7 @@ impl IntoResponse for APIError {
             | APIError::FailedPeerDisconnection(_)
             | APIError::FailedSendingOnionMessage(_)
             | APIError::IO(_)
+            | APIError::JsonParsing(_)
             | APIError::Unexpected(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 self.to_string(),

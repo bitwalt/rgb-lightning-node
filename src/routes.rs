@@ -83,7 +83,7 @@ use crate::{
     rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional},
 };
 use crate::{
-    disk::{self, CHANNEL_PEER_DATA},
+    disk::{self, CHANNEL_PEER_DATA, CHANNEL_METADATA, persist_channel_metadata},
     error::APIError,
     ldk::{PaymentInfo, FEE_RATE, UTXO_SIZE_SAT},
     utils::{
@@ -384,6 +384,8 @@ pub(crate) struct Channel {
     pub(crate) asset_id: Option<String>,
     pub(crate) asset_local_amount: Option<u64>,
     pub(crate) asset_remote_amount: Option<u64>,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1921,6 +1923,14 @@ pub(crate) async fn list_channels(
 ) -> Result<Json<ListChannelsResponse>, APIError> {
     let unlocked_state = state.check_unlocked().await?.clone().unwrap();
 
+    // Load channel metadata
+    let channel_metadata_path = state.static_state.ldk_data_dir.join(CHANNEL_METADATA);
+    let channel_metadata_map = disk::read_channel_metadata_map(&channel_metadata_path)
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to read channel metadata: {}", e);
+            std::collections::HashMap::new()
+        });
+
     let mut channels = vec![];
     for chan_info in unlocked_state.channel_manager.list_channels() {
         let status = match chan_info.channel_shutdown_state.unwrap() {
@@ -1933,8 +1943,21 @@ pub(crate) async fn list_channels(
             }
             _ => ChannelStatus::Closing,
         };
+
+        let channel_id_str = chan_info.channel_id.0.as_hex().to_string();
+        
+        // Get timestamps from metadata or use current timestamp as fallback
+        let current_time = get_current_timestamp();
+        let (created_at, updated_at) = if let Some(metadata) = channel_metadata_map.get(&channel_id_str) {
+            (metadata.created_at, metadata.updated_at)
+        } else {
+            // For existing channels without metadata, use current time
+            tracing::debug!("No metadata found for channel {}, using current timestamp", channel_id_str);
+            (current_time, current_time)
+        };
+
         let mut channel = Channel {
-            channel_id: chan_info.channel_id.0.as_hex().to_string(),
+            channel_id: channel_id_str.clone(),
             peer_pubkey: hex_str(&chan_info.counterparty.node_id.serialize()),
             status,
             ready: chan_info.is_channel_ready,
@@ -1946,6 +1969,8 @@ pub(crate) async fn list_channels(
             next_outbound_htlc_minimum_msat: chan_info.next_outbound_htlc_minimum_msat,
             is_usable: chan_info.is_usable,
             public: chan_info.is_public,
+            created_at,
+            updated_at,
             ..Default::default()
         };
 
@@ -1969,7 +1994,7 @@ pub(crate) async fn list_channels(
         }
 
         let info_file_path = get_rgb_channel_info_path(
-            &chan_info.channel_id.0.as_hex().to_string(),
+            &channel_id_str,
             &state.static_state.ldk_data_dir,
             false,
         );
@@ -2834,6 +2859,18 @@ pub(crate) async fn open_channel(
             })?;
         let temporary_channel_id = temporary_channel_id.0.as_hex().to_string();
         tracing::info!("EVENT: initiated channel with peer {}", peer_pubkey);
+
+        // Persist channel metadata
+        let channel_metadata_path = state.static_state.ldk_data_dir.join(CHANNEL_METADATA);
+        let created_at = get_current_timestamp();
+        if let Err(e) = persist_channel_metadata(
+            &channel_metadata_path,
+            &temporary_channel_id,
+            created_at,
+            created_at,
+        ) {
+            tracing::warn!("Failed to persist channel metadata: {}", e);
+        }
 
         if let Some((contract_id, asset_amount)) = &colored_info {
             let rgb_info = RgbInfo {
