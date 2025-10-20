@@ -47,7 +47,7 @@ use crate::routes::{
     list_peers, list_swaps, list_transactions, list_transfers, list_unspents, ln_invoice, lock,
     maker_execute, maker_init, network_info, node_info, open_channel, post_asset_media,
     refresh_transfers, restore, rgb_invoice, send_asset, send_btc, send_onion_message,
-    send_payment, shutdown, sign_message, sync, taker, unlock,
+    send_payment, shutdown, sign_message, sync, taker, unlock, verify_message,
 };
 use crate::utils::{start_daemon, AppState, LOGS_DIR};
 
@@ -154,6 +154,7 @@ pub(crate) async fn app(args: LdkUserInfo) -> Result<(Router, Arc<AppState>), Ap
         .route("/sync", post(sync))
         .route("/taker", post(taker))
         .route("/unlock", post(unlock))
+        .route("/verifymessage", post(verify_message))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request<_>| {

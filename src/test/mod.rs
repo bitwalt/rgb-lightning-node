@@ -36,8 +36,9 @@ use crate::routes::{
     PostAssetMediaResponse, RefreshRequest, RestoreRequest, RgbInvoiceRequest, RgbInvoiceResponse,
     SendAssetRequest, SendAssetResponse, SendBtcRequest, SendBtcResponse, SendPaymentRequest,
     SendPaymentResponse, Swap, SwapStatus, TakerRequest, Transaction, Transfer, UnlockRequest,
-    Unspent,
+    Unspent, VerifyMessageRequest, VerifyMessageResponse,
 };
+use crate::routes::{SignMessageRequest, SignMessageResponse};
 use crate::utils::{hex_str_to_vec, ELECTRUM_URL_REGTEST, PROXY_ENDPOINT_LOCAL};
 
 use super::*;
@@ -1382,6 +1383,25 @@ async fn taker(node_address: SocketAddr, swapstring: String) -> EmptyResponse {
         .unwrap()
 }
 
+async fn sign_message(node_address: SocketAddr, message: &str) -> String {
+    println!("signing message '{message}' for node {node_address}");
+    let payload = SignMessageRequest {
+        message: message.to_string(),
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/signmessage"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<SignMessageResponse>()
+        .await
+        .unwrap()
+        .signed_message
+}
+
 async fn unlock_res(node_address: SocketAddr, password: &str) -> Response {
     println!("unlocking node {node_address}");
     let payload = UnlockRequest {
@@ -1411,6 +1431,32 @@ async fn unlock(node_address: SocketAddr, password: &str) {
         .json::<EmptyResponse>()
         .await
         .unwrap();
+}
+
+async fn verify_message(
+    node_address: SocketAddr,
+    message: &str,
+    signed_message: &str,
+    pubkey: &str,
+) -> bool {
+    println!("verifying message '{message}' for node {node_address}");
+    let payload = VerifyMessageRequest {
+        message: message.to_string(),
+        signed_message: signed_message.to_string(),
+        pubkey: pubkey.to_string(),
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/verifymessage"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<VerifyMessageResponse>()
+        .await
+        .unwrap()
+        .verified
 }
 
 async fn wait_for_balance(node_address: SocketAddr, asset_id: &str, expected_balance: u64) {
@@ -1688,6 +1734,7 @@ mod payment;
 mod refuse_high_fees;
 mod restart;
 mod send_receive;
+mod sign_verify;
 mod swap_reverse_same_channel;
 mod swap_roundtrip_assets;
 mod swap_roundtrip_buy;

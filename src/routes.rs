@@ -978,6 +978,18 @@ pub(crate) struct SignMessageResponse {
     pub(crate) signed_message: String,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct VerifyMessageRequest {
+    pub(crate) message: String,
+    pub(crate) signed_message: String,
+    pub(crate) pubkey: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct VerifyMessageResponse {
+    pub(crate) verified: bool,
+}
+
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct Swap {
     pub(crate) qty_from: u64,
@@ -3545,6 +3557,23 @@ pub(crate) async fn sign_message(
     );
 
     Ok(Json(SignMessageResponse { signed_message }))
+}
+
+pub(crate) async fn verify_message(
+    WithRejection(Json(payload), _): WithRejection<Json<VerifyMessageRequest>, APIError>,
+) -> Result<Json<VerifyMessageResponse>, APIError> {
+    let pubkey = match PublicKey::from_str(&payload.pubkey) {
+        Ok(pubkey) => pubkey,
+        Err(_e) => return Err(APIError::InvalidPubkey),
+    };
+    let verified = lightning::util::message_signing::verify(
+        &payload.message.as_bytes()[payload.message.len()..],
+        &payload.signed_message,
+        &pubkey,
+    )
+    .is_ok();
+
+    Ok(Json(VerifyMessageResponse { verified }))
 }
 
 pub(crate) async fn sync(
