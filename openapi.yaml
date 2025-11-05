@@ -918,6 +918,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SignMessageResponse'
+  /verifysignature:
+    post:
+      tags:
+        - Other
+      summary: Verify a signed message
+      description: Verify that the provided signature matches the message and public key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifySignatureRequest'
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifySignatureResponse'
   /taker:
     post:
       tags:
@@ -2130,6 +2148,24 @@ components:
         signed_message:
           type: string
           example: signed message
+    VerifySignatureRequest:
+      type: object
+      properties:
+        message:
+          type: string
+          example: message to verify
+        pubkey:
+          type: string
+          example: 03b79a4bc1ec365524b4fab9a39eb133753646babb5a1da5c4bc94c53110b7795d
+        signed_message:
+          type: string
+          example: signed message
+    VerifySignatureResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          example: true
     Swap:
       type: object
       properties:
