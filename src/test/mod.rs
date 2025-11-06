@@ -35,8 +35,8 @@ use crate::routes::{
     NetworkInfoResponse, NodeInfoResponse, OpenChannelRequest, OpenChannelResponse, Payment, Peer,
     PostAssetMediaResponse, RefreshRequest, RestoreRequest, RgbInvoiceRequest, RgbInvoiceResponse,
     SendAssetRequest, SendAssetResponse, SendBtcRequest, SendBtcResponse, SendPaymentRequest,
-    SendPaymentResponse, Swap, SwapStatus, TakerRequest, Transaction, Transfer, UnlockRequest,
-    Unspent,
+    SendPaymentResponse, SignMessageRequest, SignMessageResponse, Swap, SwapStatus, TakerRequest,
+    Transaction, Transfer, UnlockRequest, Unspent, VerifySignatureRequest, VerifySignatureResponse,
 };
 use crate::utils::{hex_str_to_vec, ELECTRUM_URL_REGTEST, PROXY_ENDPOINT_LOCAL};
 
@@ -1019,6 +1019,51 @@ async fn node_info(node_address: SocketAddr) -> NodeInfoResponse {
         .unwrap()
 }
 
+async fn sign_message_api(node_address: SocketAddr, message: &str) -> String {
+    println!("signing message for node {node_address}");
+    let payload = SignMessageRequest {
+        message: message.to_string(),
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/signmessage"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<SignMessageResponse>()
+        .await
+        .unwrap()
+        .signed_message
+}
+
+async fn verify_signature_api(
+    node_address: SocketAddr,
+    message: &str,
+    pubkey: &str,
+    signed_message: &str,
+) -> bool {
+    println!("verifying signature for node {node_address}");
+    let payload = VerifySignatureRequest {
+        message: message.to_string(),
+        pubkey: pubkey.to_string(),
+        signed_message: signed_message.to_string(),
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/verifysignature"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<VerifySignatureResponse>()
+        .await
+        .unwrap()
+        .valid
+}
+
 async fn open_channel(
     node_address: SocketAddr,
     dest_peer_pubkey: &str,
@@ -1706,3 +1751,4 @@ mod swap_roundtrip_multihop_sell;
 mod swap_roundtrip_sell;
 mod upload_asset_media;
 mod vanilla_payment_on_rgb_channel;
+mod verify_signature;

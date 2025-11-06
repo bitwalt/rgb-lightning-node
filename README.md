@@ -204,6 +204,7 @@ The node currently exposes the following APIs:
 - `/sendpayment` (POST)
 - `/shutdown` (POST)
 - `/signmessage` (POST)
+- `/verifysignature` (POST)
 - `/sync` (POST)
 - `/taker` (POST)
 - `/unlock` (POST)

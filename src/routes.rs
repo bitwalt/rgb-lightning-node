@@ -978,6 +978,18 @@ pub(crate) struct SignMessageResponse {
     pub(crate) signed_message: String,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct VerifySignatureRequest {
+    pub(crate) message: String,
+    pub(crate) pubkey: String,
+    pub(crate) signed_message: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct VerifySignatureResponse {
+    pub(crate) valid: bool,
+}
+
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct Swap {
     pub(crate) qty_from: u64,
@@ -3539,12 +3551,30 @@ pub(crate) async fn sign_message(
     let unlocked_state = state.check_unlocked().await?.clone().unwrap();
 
     let message = payload.message.trim();
+    let message_hash = Sha256::hash(message.as_bytes());
     let signed_message = lightning::util::message_signing::sign(
-        &message.as_bytes()[message.len()..],
+        message_hash.as_byte_array(),
         &unlocked_state.keys_manager.get_node_secret_key(),
     );
 
     Ok(Json(SignMessageResponse { signed_message }))
+}
+
+pub(crate) async fn verify_signature(
+    WithRejection(Json(payload), _): WithRejection<Json<VerifySignatureRequest>, APIError>,
+) -> Result<Json<VerifySignatureResponse>, APIError> {
+    let message = payload.message.trim();
+    let pubkey = PublicKey::from_str(payload.pubkey.trim()).map_err(|_| APIError::InvalidPubkey)?;
+    let signed_message = payload.signed_message.trim();
+    let message_hash = Sha256::hash(message.as_bytes());
+
+    let valid = lightning::util::message_signing::verify(
+        message_hash.as_byte_array(),
+        signed_message,
+        &pubkey,
+    );
+
+    Ok(Json(VerifySignatureResponse { valid }))
 }
 
 pub(crate) async fn sync(
