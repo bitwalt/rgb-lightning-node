@@ -3572,8 +3572,7 @@ pub(crate) async fn verify_signature(
         message_hash.as_byte_array(),
         signed_message,
         &pubkey,
-    )
-    .is_ok();
+    );
 
     Ok(Json(VerifySignatureResponse { valid }))
 }
