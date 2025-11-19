@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 use crate::ldk::{ChannelIdsMap, Router};
 use crate::rgb::{get_rgb_channel_info_optional, RgbLibWalletWrapper};
 use crate::routes::{DEFAULT_FINAL_CLTV_EXPIRY_DELTA, HTLC_MIN_MSAT};
+use crate::tor::TorConnectionManager;
 use crate::{
     args::LdkUserInfo,
     disk::FilesystemLogger,
@@ -84,6 +85,8 @@ pub(crate) struct StaticState {
     pub(crate) ldk_data_dir: PathBuf,
     pub(crate) logger: Arc<FilesystemLogger>,
     pub(crate) max_media_upload_size_mb: u16,
+    pub(crate) enable_tor: bool,
+    pub(crate) tor_socks_port: Option<u16>,
 }
 
 pub(crate) struct UnlockedAppState {
@@ -105,6 +108,7 @@ pub(crate) struct UnlockedAppState {
     pub(crate) rgb_send_lock: Arc<Mutex<bool>>,
     pub(crate) channel_ids_map: Arc<Mutex<ChannelIdsMap>>,
     pub(crate) proxy_endpoint: String,
+    pub(crate) tor_manager: Option<Arc<TorConnectionManager>>,
 }
 
 impl UnlockedAppState {
@@ -260,6 +264,83 @@ pub(crate) async fn do_connect_peer(
     }
 }
 
+/// Connect to a peer through Tor if the address is a .onion address
+/// Falls back to regular connection for non-Tor addresses
+pub(crate) async fn connect_peer_with_tor(
+    pubkey: PublicKey,
+    host: String,
+    port: u16,
+    peer_manager: Arc<PeerManager>,
+    tor_manager: Option<Arc<TorConnectionManager>>,
+) -> Result<(), APIError> {
+    // Check if peer is already connected
+    for peer_details in peer_manager.list_peers() {
+        if peer_details.counterparty_node_id == pubkey {
+            return Ok(());
+        }
+    }
+
+    // If it's a .onion address and we have Tor support, use Tor
+    if TorConnectionManager::is_onion_address(&host) {
+        if let Some(tor_mgr) = tor_manager {
+            return do_connect_peer_via_tor(pubkey, host, port, peer_manager, tor_mgr).await;
+        } else {
+            return Err(APIError::InvalidPeerInfo(
+                "Cannot connect to .onion address without Tor enabled".to_string(),
+            ));
+        }
+    }
+
+    // For non-onion addresses, try to resolve and connect normally
+    let socket_addr = format!("{}:{}", host, port)
+        .to_socket_addrs()
+        .map_err(|e| {
+            APIError::InvalidPeerInfo(format!("Failed to resolve address: {}", e))
+        })?
+        .next()
+        .ok_or_else(|| {
+            APIError::InvalidPeerInfo("Failed to resolve address".to_string())
+        })?;
+
+    do_connect_peer(pubkey, socket_addr, peer_manager).await
+}
+
+/// Connect to a peer via Tor (for .onion addresses or when Tor is preferred)
+async fn do_connect_peer_via_tor(
+    pubkey: PublicKey,
+    host: String,
+    port: u16,
+    peer_manager: Arc<PeerManager>,
+    tor_manager: Arc<TorConnectionManager>,
+) -> Result<(), APIError> {
+    tracing::info!("Connecting to peer via Tor: {}:{}", host, port);
+
+    // Establish connection through Tor
+    let tor_stream = tor_manager.connect_through_tor(&host, port).await?;
+
+    // Convert to std stream for LDK
+    let std_stream = tor_stream.into_std().map_err(|e| {
+        tracing::error!("Failed to convert Tor stream to std: {}", e);
+        APIError::FailedPeerConnection
+    })?;
+
+    // Set up the connection with LDK
+    // Note: lightning_net_tokio::setup_outbound returns () and spawns a background task
+    lightning_net_tokio::setup_outbound(Arc::clone(&peer_manager), pubkey, std_stream).await;
+
+    // Wait for peer to be confirmed as connected
+    for _ in 0..100 {
+        if peer_manager.peer_by_node_id(&pubkey).is_some() {
+            tracing::info!("Successfully connected to peer via Tor: {}:{}", host, port);
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    tracing::error!("Timeout waiting for Tor peer connection to be confirmed");
+    Err(APIError::FailedPeerConnection)
+}
+
 #[inline]
 pub(crate) fn hex_str(value: &[u8]) -> String {
     let mut res = String::with_capacity(2 * value.len());
@@ -311,6 +392,41 @@ where
     rx.await.unwrap()
 }
 
+/// Parse peer info that supports both IP addresses and hostnames (including .onion)
+/// Returns (PublicKey, Option<(hostname, port)>)
+pub(crate) fn parse_peer_info_with_host(
+    peer_pubkey_and_addr: String,
+) -> Result<(PublicKey, Option<(String, u16)>), APIError> {
+    let mut pubkey_and_addr = peer_pubkey_and_addr.split('@');
+    let pubkey = pubkey_and_addr.next();
+
+    let peer_addr = if let Some(peer_addr_str) = pubkey_and_addr.next() {
+        // Split host:port
+        let parts: Vec<&str> = peer_addr_str.split(':').collect();
+        if parts.len() != 2 {
+            return Err(APIError::InvalidPeerInfo(s!(
+                "couldn't parse host:port"
+            )));
+        }
+
+        let host = parts[0].to_string();
+        let port = parts[1].parse::<u16>().map_err(|_| {
+            APIError::InvalidPeerInfo(s!("couldn't parse port"))
+        })?;
+
+        Some((host, port))
+    } else {
+        None
+    };
+
+    let pubkey = hex_str_to_compressed_pubkey(pubkey.unwrap());
+    if pubkey.is_none() {
+        return Err(APIError::InvalidPeerInfo(s!("couldn't parse pubkey")));
+    }
+
+    Ok((pubkey.unwrap(), peer_addr))
+}
+
 pub(crate) fn parse_peer_info(
     peer_pubkey_and_ip_addr: String,
 ) -> Result<(PublicKey, Option<SocketAddr>), APIError> {
@@ -353,6 +469,8 @@ pub(crate) async fn start_daemon(args: &LdkUserInfo) -> Result<Arc<AppState>, Ap
         ldk_data_dir,
         logger,
         max_media_upload_size_mb: args.max_media_upload_size_mb,
+        enable_tor: args.enable_tor,
+        tor_socks_port: args.tor_socks_port,
     });
 
     Ok(Arc::new(AppState {

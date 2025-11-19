@@ -91,7 +91,8 @@ use crate::{
     error::APIError,
     ldk::{PaymentInfo, FEE_RATE, UTXO_SIZE_SAT},
     utils::{
-        connect_peer_if_necessary, get_current_timestamp, no_cancel, parse_peer_info, AppState,
+        connect_peer_if_necessary, connect_peer_with_tor, get_current_timestamp, no_cancel,
+        parse_peer_info, parse_peer_info_with_host, AppState,
     },
 };
 
@@ -1427,16 +1428,33 @@ pub(crate) async fn connect_peer(
     no_cancel(async move {
         let unlocked_state = state.check_unlocked().await?.clone().unwrap();
 
-        let (peer_pubkey, peer_addr) = parse_peer_info(payload.peer_pubkey_and_addr.to_string())?;
+        // Parse peer info to support both IP addresses and hostnames (including .onion)
+        let (peer_pubkey, peer_addr_info) =
+            parse_peer_info_with_host(payload.peer_pubkey_and_addr.to_string())?;
 
-        if let Some(peer_addr) = peer_addr {
-            connect_peer_if_necessary(peer_pubkey, peer_addr, unlocked_state.peer_manager.clone())
-                .await?;
-            disk::persist_channel_peer(
-                &state.static_state.ldk_data_dir.join(CHANNEL_PEER_DATA),
-                &peer_pubkey,
-                &peer_addr,
-            )?;
+        if let Some((host, port)) = peer_addr_info {
+            // Use Tor-aware connection if Tor is enabled, otherwise fall back to regular connection
+            connect_peer_with_tor(
+                peer_pubkey,
+                host.clone(),
+                port,
+                unlocked_state.peer_manager.clone(),
+                unlocked_state.tor_manager.clone(),
+            )
+            .await?;
+
+            // For persistence, try to convert to SocketAddr (will work for IPs, not for .onion)
+            if let Ok(socket_addr) = format!("{}:{}", host, port).parse() {
+                disk::persist_channel_peer(
+                    &state.static_state.ldk_data_dir.join(CHANNEL_PEER_DATA),
+                    &peer_pubkey,
+                    &socket_addr,
+                )?;
+            } else {
+                // For .onion addresses, we need a different approach
+                // For now, just log that we can't persist .onion addresses
+                tracing::warn!("Cannot persist .onion address to disk with current format");
+            }
         } else {
             return Err(APIError::InvalidPeerInfo(s!(
                 "incorrectly formatted peer info. Should be formatted as: `pubkey@host:port`"

@@ -26,6 +26,14 @@ struct Args {
     /// Max allowed media size for upload (in MB)
     #[arg(long, default_value_t = 5)]
     max_media_upload_size_mb: u16,
+
+    /// Enable Tor support for peer connections
+    #[arg(long, default_value_t = false)]
+    enable_tor: bool,
+
+    /// SOCKS5 proxy port for Tor (optional, uses Arti directly if not specified)
+    #[arg(long)]
+    tor_socks_port: Option<u16>,
 }
 
 pub(crate) struct LdkUserInfo {
@@ -34,6 +42,8 @@ pub(crate) struct LdkUserInfo {
     pub(crate) ldk_peer_listening_port: u16,
     pub(crate) network: BitcoinNetwork,
     pub(crate) max_media_upload_size_mb: u16,
+    pub(crate) enable_tor: bool,
+    pub(crate) tor_socks_port: Option<u16>,
 }
 
 pub(crate) fn parse_startup_args() -> Result<LdkUserInfo, AppError> {
@@ -52,5 +62,7 @@ pub(crate) fn parse_startup_args() -> Result<LdkUserInfo, AppError> {
         ldk_peer_listening_port,
         network,
         max_media_upload_size_mb: args.max_media_upload_size_mb,
+        enable_tor: args.enable_tor,
+        tor_socks_port: args.tor_socks_port,
     })
 }

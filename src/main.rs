@@ -7,6 +7,7 @@ mod ldk;
 mod rgb;
 mod routes;
 mod swap;
+mod tor;
 mod utils;
 
 #[cfg(test)]

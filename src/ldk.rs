@@ -91,6 +91,7 @@ use crate::error::APIError;
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
 use crate::routes::{HTLCStatus, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT};
 use crate::swap::SwapData;
+use crate::tor::TorConnectionManager;
 use crate::utils::{
     check_port_is_available, connect_peer_if_necessary, do_connect_peer, get_current_timestamp,
     hex_str, AppState, StaticState, UnlockedAppState, ELECTRUM_URL_MAINNET, ELECTRUM_URL_REGTEST,
@@ -1462,6 +1463,25 @@ pub(crate) async fn start_ldk(
         return Err(APIError::NetworkMismatch(bitcoind_chain, bitcoin_network));
     }
 
+    // Initialize Tor connection manager if enabled
+    let tor_manager = if static_state.enable_tor {
+        tracing::info!("Initializing Tor support...");
+        let tor_data_dir = Some(ldk_data_dir.join("tor"));
+        match TorConnectionManager::new(tor_data_dir, static_state.tor_socks_port).await {
+            Ok(mgr) => {
+                tracing::info!("Tor connection manager initialized successfully");
+                Some(Arc::new(mgr))
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize Tor: {:?}", e);
+                return Err(e);
+            }
+        }
+    } else {
+        tracing::info!("Tor support is disabled");
+        None
+    };
+
     // RGB setup
     let indexer_url = if let Some(indexer_url) = &unlock_request.indexer_url {
         let indexer_protocol = check_indexer_url(indexer_url, bitcoin_network)?;
@@ -1979,6 +1999,7 @@ pub(crate) async fn start_ldk(
         rgb_send_lock: Arc::new(Mutex::new(false)),
         channel_ids_map,
         proxy_endpoint: proxy_endpoint.to_string(),
+        tor_manager,
     });
 
     let recent_payments_payment_ids = channel_manager
