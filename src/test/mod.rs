@@ -61,6 +61,8 @@ impl Default for LdkUserInfo {
             daemon_listening_port: 3001,
             ldk_peer_listening_port: 9735,
             max_media_upload_size_mb: 3,
+            enable_tor: false,
+            tor_socks_port: None,
         }
     }
 }
