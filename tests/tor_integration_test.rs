@@ -1,18 +1,54 @@
 /// Integration tests for Tor connectivity in RGB Lightning Node
-/// These tests verify that nodes can connect to each other via Tor
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
+/// These tests verify that nodes can connect to each other via Tor using real Tor SOCKS proxy
+use tokio::net::TcpStream;
+
+/// Check if Tor SOCKS proxy is available on the default port (9050)
+async fn is_tor_socks_available(port: u16) -> bool {
+    match TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
 
 #[cfg(test)]
 mod tor_connection_tests {
     use super::*;
 
-    /// Test that TorConnectionManager can be initialized
+    /// Test that TorConnectionManager can be initialized with real Tor SOCKS
+    #[tokio::test]
+    #[ignore] // Ignore by default as it requires Tor SOCKS proxy running
+    async fn test_tor_manager_initialization_with_socks() {
+        // This test verifies that we can use a real Tor SOCKS proxy
+        use rgb_lightning_node::TorConnectionManager;
+
+        // Check if Tor SOCKS is available
+        if !is_tor_socks_available(9050).await {
+            println!("⚠ Tor SOCKS proxy not available on port 9050");
+            println!("  Please start Tor daemon: sudo systemctl start tor");
+            println!("  Or install Tor: sudo apt-get install tor");
+            return;
+        }
+
+        // Use real Tor SOCKS proxy instead of Arti
+        let result = TorConnectionManager::new(None, Some(9050)).await;
+
+        match result {
+            Ok(_manager) => {
+                println!("✓ Tor connection manager initialized with SOCKS proxy");
+                assert!(true);
+            }
+            Err(e) => {
+                println!("⚠ Tor manager initialization failed: {:?}", e);
+                panic!("Failed to initialize Tor manager with SOCKS proxy");
+            }
+        }
+    }
+
+    /// Test that TorConnectionManager can be initialized with Arti (fallback)
     #[tokio::test]
     #[ignore] // Ignore by default as it requires network access
     async fn test_tor_manager_initialization() {
-        // This test verifies that we can bootstrap a Tor client
+        // This test verifies that we can bootstrap a Tor client with Arti
         use rgb_lightning_node::TorConnectionManager;
 
         let result = TorConnectionManager::new(None, None).await;
@@ -20,8 +56,8 @@ mod tor_connection_tests {
         // We expect this to succeed if network is available
         // If Tor bootstrap fails, it's likely due to network issues
         match result {
-            Ok(manager) => {
-                println!("✓ Tor client bootstrapped successfully");
+            Ok(_manager) => {
+                println!("✓ Tor client bootstrapped successfully (Arti)");
                 assert!(true);
             }
             Err(e) => {
@@ -91,17 +127,62 @@ mod tor_connection_tests {
         println!("✓ Peer address parsing works correctly");
     }
 
-    /// Test connecting to a public Tor service
+    /// Test connecting to a public Tor service via real Tor SOCKS
+    /// This is a real integration test that requires Tor SOCKS proxy running
+    #[tokio::test]
+    #[ignore] // Ignore by default - run with --ignored flag
+    async fn test_tor_connection_to_public_service_via_socks() {
+        use rgb_lightning_node::TorConnectionManager;
+
+        // Check if Tor SOCKS is available
+        if !is_tor_socks_available(9050).await {
+            println!("⚠ Tor SOCKS proxy not available on port 9050");
+            println!("  Please start Tor daemon: sudo systemctl start tor");
+            println!("  Or install Tor: sudo apt-get install tor");
+            return;
+        }
+
+        println!("Initializing Tor connection manager with SOCKS proxy...");
+        let manager = match TorConnectionManager::new(None, Some(9050)).await {
+            Ok(mgr) => {
+                println!("✓ Tor connection manager initialized with SOCKS proxy");
+                mgr
+            }
+            Err(e) => {
+                println!("✗ Failed to initialize Tor: {:?}", e);
+                panic!("Failed to initialize Tor manager with SOCKS proxy");
+            }
+        };
+
+        // Try to connect to DuckDuckGo's onion service (a well-known public onion)
+        // This is just to test Tor connectivity, not Lightning specific
+        let onion_addr = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        println!("Attempting to connect to {} via Tor SOCKS", onion_addr);
+
+        let result = manager.connect_through_tor(onion_addr, 80).await;
+
+        match result {
+            Ok(_stream) => {
+                println!("✓ Successfully connected to onion service via Tor SOCKS!");
+            }
+            Err(e) => {
+                println!("✗ Connection failed: {:?}", e);
+                println!("  This may be due to network issues or Tor configuration");
+            }
+        }
+    }
+
+    /// Test connecting to a public Tor service via Arti (fallback)
     /// This is a real integration test that requires Tor network access
     #[tokio::test]
     #[ignore] // Ignore by default - run with --ignored flag
     async fn test_tor_connection_to_public_service() {
         use rgb_lightning_node::TorConnectionManager;
 
-        println!("Initializing Tor client...");
+        println!("Initializing Tor client (Arti)...");
         let manager = match TorConnectionManager::new(None, None).await {
             Ok(mgr) => {
-                println!("✓ Tor client initialized");
+                println!("✓ Tor client initialized (Arti)");
                 mgr
             }
             Err(e) => {
@@ -114,13 +195,13 @@ mod tor_connection_tests {
         // Try to connect to DuckDuckGo's onion service (a well-known public onion)
         // This is just to test Tor connectivity, not Lightning specific
         let onion_addr = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
-        println!("Attempting to connect to {}", onion_addr);
+        println!("Attempting to connect to {} via Arti", onion_addr);
 
         let result = manager.connect_through_tor(onion_addr, 80).await;
 
         match result {
             Ok(_stream) => {
-                println!("✓ Successfully connected to onion service via Tor!");
+                println!("✓ Successfully connected to onion service via Arti!");
             }
             Err(e) => {
                 println!("✗ Connection failed: {:?}", e);
@@ -129,12 +210,50 @@ mod tor_connection_tests {
         }
     }
 
+    /// Test connecting to clearnet via real Tor SOCKS
+    #[tokio::test]
+    #[ignore] // Ignore by default - run with --ignored flag
+    async fn test_clearnet_connection_via_socks() {
+        use rgb_lightning_node::TorConnectionManager;
+
+        // Check if Tor SOCKS is available
+        if !is_tor_socks_available(9050).await {
+            println!("⚠ Tor SOCKS proxy not available on port 9050");
+            println!("  Please start Tor daemon: sudo systemctl start tor");
+            return;
+        }
+
+        println!("Initializing Tor connection manager with SOCKS proxy...");
+        let manager = match TorConnectionManager::new(None, Some(9050)).await {
+            Ok(mgr) => {
+                println!("✓ Tor connection manager initialized with SOCKS proxy");
+                mgr
+            }
+            Err(e) => {
+                println!("✗ Failed to initialize Tor: {:?}", e);
+                panic!("Failed to initialize Tor manager with SOCKS proxy");
+            }
+        };
+
+        // Try to connect to a public website through Tor SOCKS
+        println!("Attempting to connect to example.com via Tor SOCKS");
+        let result = manager.connect_through_tor("example.com", 80).await;
+
+        match result {
+            Ok(_stream) => {
+                println!("✓ Successfully connected to clearnet site via Tor SOCKS!");
+            }
+            Err(e) => {
+                println!("✗ Connection failed: {:?}", e);
+                println!("  This may be due to network issues or Tor configuration");
+            }
+        }
+    }
+
     /// Test the full workflow of peer info parsing for Tor addresses
     #[test]
     fn test_parse_peer_info_with_host() {
         use rgb_lightning_node::parse_peer_info_with_host;
-        use bitcoin::secp256k1::PublicKey;
-        use std::str::FromStr;
 
         // Valid test pubkey (example)
         let test_pubkey = "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc";
@@ -169,7 +288,12 @@ mod tor_connection_tests {
 mod tor_node_integration_tests {
     use super::*;
 
-    /// Helper to check if Tor is available
+    /// Helper to check if Tor SOCKS is available
+    async fn is_tor_socks_available() -> bool {
+        super::is_tor_socks_available(9050).await
+    }
+
+    /// Helper to check if Tor is available (Arti)
     async fn is_tor_available() -> bool {
         use rgb_lightning_node::TorConnectionManager;
 
@@ -208,7 +332,47 @@ mod tor_node_integration_tests {
         assert!(true); // Placeholder
     }
 
-    /// Stress test: Multiple concurrent Tor connections
+    /// Stress test: Multiple concurrent Tor SOCKS connections
+    #[tokio::test]
+    #[ignore]
+    async fn test_multiple_tor_socks_connections() {
+        if !is_tor_socks_available().await {
+            println!("⚠ Tor SOCKS not available, skipping test");
+            println!("  Please start Tor daemon: sudo systemctl start tor");
+            return;
+        }
+
+        use rgb_lightning_node::TorConnectionManager;
+
+        println!("Testing multiple concurrent Tor SOCKS initializations...");
+
+        let mut handles = vec![];
+
+        for i in 0..3 {
+            let handle = tokio::spawn(async move {
+                println!("  Starting Tor connection manager {} with SOCKS...", i);
+                let result = TorConnectionManager::new(None, Some(9050)).await;
+                if result.is_ok() {
+                    println!("  ✓ Tor connection manager {} initialized", i);
+                } else {
+                    println!("  ✗ Tor connection manager {} failed", i);
+                }
+                result.is_ok()
+            });
+            handles.push(handle);
+        }
+
+        let results: Vec<bool> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap_or(false))
+            .collect();
+
+        let success_count = results.iter().filter(|&&x| x).count();
+        println!("✓ {} out of {} Tor connection managers initialized successfully", success_count, results.len());
+    }
+
+    /// Stress test: Multiple concurrent Tor connections (Arti fallback)
     #[tokio::test]
     #[ignore]
     async fn test_multiple_tor_connections() {
@@ -219,7 +383,7 @@ mod tor_node_integration_tests {
 
         use rgb_lightning_node::TorConnectionManager;
 
-        println!("Testing multiple concurrent Tor initializations...");
+        println!("Testing multiple concurrent Tor initializations (Arti)...");
 
         let mut handles = vec![];
 

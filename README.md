@@ -229,10 +229,106 @@ Tests for a few scenarios using the regtest network are included. The same
 services and data directories as the regtest.sh script are used, so the two
 cannot run at the same time.
 
-Tests can be executed with:
+### Running Tests
+
+Basic tests can be executed with:
 ```sh
 cargo test
 ```
+
+### Tor Testing
+
+Some tests require a real Tor SOCKS proxy to be running. These tests are
+ignored by default and can be run with the `--ignored` flag.
+
+#### Installing Tor
+
+**On Debian/Ubuntu:**
+```sh
+sudo apt-get update
+sudo apt-get install tor
+```
+
+**On Fedora/RHEL:**
+```sh
+sudo dnf install tor
+```
+
+**On macOS (using Homebrew):**
+```sh
+brew install tor
+```
+
+**On Arch Linux:**
+```sh
+sudo pacman -S tor
+```
+
+#### Setting Up Tor for Testing
+
+1. **Start the Tor service:**
+
+   On systemd-based systems (most Linux distributions):
+   ```sh
+   sudo systemctl start tor
+   sudo systemctl enable tor  # Optional: enable on boot
+   ```
+
+   On macOS:
+   ```sh
+   brew services start tor
+   ```
+
+2. **Verify Tor is running:**
+
+   Check if the SOCKS proxy is listening on port 9050:
+   ```sh
+   # On Linux/macOS
+   netstat -an | grep 9050
+   # or
+   ss -tlnp | grep 9050
+   ```
+
+   You should see output indicating port 9050 is listening.
+
+3. **Run Tor integration tests:**
+
+   ```sh
+   # Run all Tor tests (including those requiring SOCKS proxy)
+   cargo test -- --ignored
+
+   # Run specific Tor SOCKS tests
+   cargo test -- --ignored tor::tests::test_socks_proxy_connection
+   cargo test -- --ignored tor_connection_tests::test_tor_manager_initialization_with_socks
+   cargo test -- --ignored tor_connection_tests::test_tor_connection_to_public_service_via_socks
+   cargo test -- --ignored tor_connection_tests::test_clearnet_connection_via_socks
+   ```
+
+4. **Using Tor SOCKS with the node:**
+
+   When running the node, you can specify a Tor SOCKS proxy port:
+   ```sh
+   rgb-lightning-node dataldk0/ --daemon-listening-port 3001 \
+       --ldk-peer-listening-port 9735 --network regtest \
+       --tor-socks-port 9050
+   ```
+
+   This will use the real Tor SOCKS proxy instead of the embedded Arti client.
+
+#### Troubleshooting Tor Tests
+
+- **"Tor SOCKS proxy not available on port 9050":**
+  - Ensure Tor is installed and running: `sudo systemctl status tor`
+  - Check if port 9050 is listening: `netstat -an | grep 9050`
+  - Restart Tor if needed: `sudo systemctl restart tor`
+
+- **Connection timeouts:**
+  - Tor may need time to bootstrap (30-90 seconds on first run)
+  - Check Tor logs: `sudo journalctl -u tor -f` (systemd) or `/var/log/tor/log` (traditional)
+
+- **Permission errors:**
+  - Ensure Tor service is running with appropriate permissions
+  - Some systems may require adding your user to the `tor` group
 
 ## Projects using RLN
 

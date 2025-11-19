@@ -48,14 +48,16 @@ impl TorConnectionManager {
     ) -> Result<TcpStream, APIError> {
         debug!("Connecting through Tor to {}:{}", host, port);
 
-        // For .onion addresses, use Arti directly
-        if host.ends_with(".onion") {
-            self.connect_to_onion(host, port).await
-        } else if let Some(socks_port) = self.socks_port {
-            // For regular addresses, use SOCKS proxy if configured
+        // If SOCKS proxy is configured, use it for all connections (including .onion)
+        // This is necessary to connect to local Tor hidden services running on the system Tor daemon
+        if let Some(socks_port) = self.socks_port {
+            debug!("Using SOCKS proxy (port {}) for connection to {}:{}", socks_port, host, port);
             self.connect_via_socks(host, port, socks_port).await
+        } else if host.ends_with(".onion") {
+            // For .onion addresses without SOCKS proxy, use Arti directly
+            self.connect_to_onion(host, port).await
         } else {
-            // Use Arti's direct connection for regular addresses too
+            // For regular addresses without SOCKS proxy, use Arti's direct connection
             self.connect_direct_via_tor(host, port).await
         }
     }
@@ -68,7 +70,7 @@ impl TorConnectionManager {
             .tor_client
             .connect((host, port))
             .await
-            .map_err(|e| {
+            .map_err(|_e| {
                 APIError::FailedPeerConnection
             })?;
 
@@ -327,26 +329,45 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires network access and a running SOCKS proxy
+    #[ignore] // Requires network access and a running Tor SOCKS proxy
     async fn test_socks_proxy_connection() {
-        // This test requires a SOCKS proxy to be running on port 9050
-        let manager = match TorConnectionManager::new(None, Some(9050)).await {
-            Ok(mgr) => mgr,
+        // This test requires a real Tor SOCKS proxy to be running on port 9050
+        // Check if Tor SOCKS is available
+        use tokio::net::TcpStream;
+        match TcpStream::connect("127.0.0.1:9050").await {
+            Ok(_) => {
+                println!("✓ Tor SOCKS proxy detected on port 9050");
+            }
             Err(_) => {
-                println!("⚠ Skipping test - Tor not available");
+                println!("⚠ Tor SOCKS proxy not available on port 9050");
+                println!("  Please start Tor daemon: sudo systemctl start tor");
+                println!("  Or install Tor: sudo apt-get install tor");
                 return;
+            }
+        }
+
+        let manager = match TorConnectionManager::new(None, Some(9050)).await {
+            Ok(mgr) => {
+                println!("✓ Tor connection manager initialized with SOCKS proxy");
+                mgr
+            }
+            Err(e) => {
+                println!("⚠ Failed to initialize Tor manager: {:?}", e);
+                panic!("Failed to initialize Tor manager with SOCKS proxy");
             }
         };
 
         // Try to connect via SOCKS proxy
+        println!("Attempting to connect to example.com via Tor SOCKS...");
         let result = manager.connect_through_tor("example.com", 80).await;
 
         match result {
             Ok(_stream) => {
-                println!("✓ Connected via SOCKS proxy");
+                println!("✓ Successfully connected via Tor SOCKS proxy");
             }
             Err(e) => {
                 println!("⚠ SOCKS connection failed: {:?}", e);
+                println!("  This may be due to network issues or Tor configuration");
             }
         }
     }

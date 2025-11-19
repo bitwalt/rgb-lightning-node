@@ -1,5 +1,3 @@
-use crate::routes::BitcoinNetwork;
-
 use super::*;
 
 const TEST_DIR_BASE: &str = "tmp/tor_connection/";
