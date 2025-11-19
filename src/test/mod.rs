@@ -1691,6 +1691,7 @@ mod refuse_high_fees;
 mod restart;
 mod send_receive;
 mod swap_reverse_same_channel;
+mod tor_connection;
 mod swap_roundtrip_assets;
 mod swap_roundtrip_buy;
 mod swap_roundtrip_buy_same_channel;
