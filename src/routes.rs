@@ -1,4 +1,4 @@
-use amplify::{map, s, Display};
+use amplify::{hex::FromHex, map, s, Display};
 use axum::{
     extract::{Multipart, State},
     Json,
@@ -574,12 +574,14 @@ pub(crate) enum HTLCStatus {
     Pending,
     Succeeded,
     Failed,
+    Held,
 }
 
 impl_writeable_tlv_based_enum!(HTLCStatus,
     (0, Pending) => {},
     (1, Succeeded) => {},
     (2, Failed) => {},
+    (3, Held) => {},
 );
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -613,7 +615,19 @@ pub(crate) enum InvoiceStatus {
     Succeeded,
     Failed,
     Expired,
+    Held,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) enum InvoiceMode {
+    Standard,
+    Hodl,
+}
+
+impl_writeable_tlv_based_enum!(InvoiceMode,
+    (0, Standard) => {},
+    (1, Hodl) => {},
+);
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct InvoiceStatusRequest {
@@ -756,6 +770,41 @@ pub(crate) struct LNInvoiceRequest {
 #[derive(Deserialize, Serialize)]
 pub(crate) struct LNInvoiceResponse {
     pub(crate) invoice: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct HodlInvoiceRequest {
+    pub(crate) amt_msat: Option<u64>,
+    pub(crate) expiry_sec: u32,
+    pub(crate) payment_hash: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct HodlInvoiceResponse {
+    pub(crate) invoice: String,
+    pub(crate) payment_hash: String,
+    pub(crate) payment_secret: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct SettleInvoiceRequest {
+    pub(crate) payment_hash: String,
+    pub(crate) payment_preimage: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct SettleInvoiceResponse {
+    pub(crate) success: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct CancelInvoiceRequest {
+    pub(crate) payment_hash: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct CancelInvoiceResponse {
+    pub(crate) success: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1757,6 +1806,7 @@ pub(crate) async fn invoice_status(
             HTLCStatus::Pending => InvoiceStatus::Pending,
             HTLCStatus::Succeeded => InvoiceStatus::Succeeded,
             HTLCStatus::Failed => InvoiceStatus::Failed,
+            HTLCStatus::Held => InvoiceStatus::Held,
         },
         None => return Err(APIError::UnknownLNInvoice),
     };
@@ -1921,6 +1971,8 @@ pub(crate) async fn keysend(
                 created_at,
                 updated_at: created_at,
                 payee_pubkey: dest_pubkey,
+                invoice_mode: InvoiceMode::Standard,
+                claim_deadline: None,
             },
         )?;
         if let Some((contract_id, rgb_amount)) = rgb_payment {
@@ -2549,12 +2601,207 @@ pub(crate) async fn ln_invoice(
                 created_at,
                 updated_at: created_at,
                 payee_pubkey: unlocked_state.channel_manager.get_our_node_id(),
+                invoice_mode: InvoiceMode::Standard,
+                claim_deadline: None,
             },
         );
 
         Ok(Json(LNInvoiceResponse {
             invoice: invoice.to_string(),
         }))
+    })
+    .await
+}
+
+pub(crate) async fn hodl_invoice(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<HodlInvoiceRequest>, APIError>,
+) -> Result<Json<HodlInvoiceResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        // Generate or use provided payment_hash
+        let (payment_hash, payment_preimage) = if let Some(hash_str) = payload.payment_hash {
+            // Use provided payment hash
+            let hash_bytes = <Vec<u8>>::from_hex(&hash_str)
+                .map_err(|_| APIError::InvalidInvoice(s!("invalid payment hash hex")))?;
+            if hash_bytes.len() != 32 {
+                return Err(APIError::InvalidInvoice(s!("payment hash must be 32 bytes")));
+            }
+            let mut hash_array = [0u8; 32];
+            hash_array.copy_from_slice(&hash_bytes);
+            (PaymentHash(hash_array), None)
+        } else {
+            // Generate new payment preimage and hash
+            let preimage = PaymentPreimage(unlocked_state.keys_manager.get_secure_random_bytes());
+            let hash: PaymentHash = preimage.into();
+            (hash, Some(preimage))
+        };
+
+        // Register the payment hash with LDK
+        let payment_secret = match unlocked_state.channel_manager.create_inbound_payment_for_hash(
+            payment_hash,
+            payload.amt_msat,
+            payload.expiry_sec,
+            None,
+        ) {
+            Ok(secret) => secret,
+            Err(()) => return Err(APIError::FailedInvoiceCreation(s!("failed to register payment hash"))),
+        };
+
+        // Create BOLT11 invoice with custom payment hash
+        let invoice_params = Bolt11InvoiceParameters {
+            amount_msats: payload.amt_msat,
+            invoice_expiry_delta_secs: Some(payload.expiry_sec),
+            payment_hash: Some(payment_hash),
+            ..Default::default()
+        };
+
+        let invoice = match unlocked_state
+            .channel_manager
+            .create_bolt11_invoice(invoice_params)
+        {
+            Ok(inv) => inv,
+            Err(e) => return Err(APIError::FailedInvoiceCreation(e.to_string())),
+        };
+
+        // Store payment info with HODL mode
+        let created_at = get_current_timestamp();
+        unlocked_state.add_inbound_payment(
+            payment_hash,
+            PaymentInfo {
+                preimage: payment_preimage,
+                secret: Some(payment_secret),
+                status: HTLCStatus::Pending,
+                amt_msat: payload.amt_msat,
+                created_at,
+                updated_at: created_at,
+                payee_pubkey: unlocked_state.channel_manager.get_our_node_id(),
+                invoice_mode: InvoiceMode::Hodl,
+                claim_deadline: None,
+            },
+        );
+
+        Ok(Json(HodlInvoiceResponse {
+            invoice: invoice.to_string(),
+            payment_hash: payment_hash.0.as_hex().to_string(),
+            payment_secret: payment_secret.0.as_hex().to_string(),
+        }))
+    })
+    .await
+}
+
+pub(crate) async fn settle_invoice(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<SettleInvoiceRequest>, APIError>,
+) -> Result<Json<SettleInvoiceResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        // Parse payment hash
+        let hash_bytes = <Vec<u8>>::from_hex(&payload.payment_hash)
+            .map_err(|_| APIError::InvalidInvoice(s!("invalid payment hash hex")))?;
+        if hash_bytes.len() != 32 {
+            return Err(APIError::InvalidInvoice(s!("payment hash must be 32 bytes")));
+        }
+        let mut hash_array = [0u8; 32];
+        hash_array.copy_from_slice(&hash_bytes);
+        let payment_hash = PaymentHash(hash_array);
+
+        // Parse payment preimage
+        let preimage_bytes = <Vec<u8>>::from_hex(&payload.payment_preimage)
+            .map_err(|_| APIError::InvalidInvoice(s!("invalid payment preimage hex")))?;
+        if preimage_bytes.len() != 32 {
+            return Err(APIError::InvalidInvoice(s!("payment preimage must be 32 bytes")));
+        }
+        let mut preimage_array = [0u8; 32];
+        preimage_array.copy_from_slice(&preimage_bytes);
+        let payment_preimage = PaymentPreimage(preimage_array);
+
+        // Verify preimage matches hash
+        let computed_hash: PaymentHash = payment_preimage.into();
+        if computed_hash.0 != payment_hash.0 {
+            return Err(APIError::InvalidInvoice(s!("preimage does not match payment hash")));
+        }
+
+        // Check if payment is in Held status
+        let payment_info = unlocked_state.inbound_payments().get(&payment_hash).cloned();
+        match payment_info {
+            Some(info) => {
+                if info.status != HTLCStatus::Held {
+                    return Err(APIError::InvalidInvoice(s!("payment is not in held status")));
+                }
+                if info.invoice_mode != InvoiceMode::Hodl {
+                    return Err(APIError::InvalidInvoice(s!("payment is not a HODL invoice")));
+                }
+            }
+            None => return Err(APIError::UnknownLNInvoice),
+        }
+
+        // Claim the funds
+        unlocked_state.channel_manager.claim_funds(payment_preimage);
+
+        tracing::info!(
+            "Successfully claimed funds for HODL invoice with payment hash {}",
+            payload.payment_hash
+        );
+
+        Ok(Json(SettleInvoiceResponse { success: true }))
+    })
+    .await
+}
+
+pub(crate) async fn cancel_invoice(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<CancelInvoiceRequest>, APIError>,
+) -> Result<Json<CancelInvoiceResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        // Parse payment hash
+        let hash_bytes = <Vec<u8>>::from_hex(&payload.payment_hash)
+            .map_err(|_| APIError::InvalidInvoice(s!("invalid payment hash hex")))?;
+        if hash_bytes.len() != 32 {
+            return Err(APIError::InvalidInvoice(s!("payment hash must be 32 bytes")));
+        }
+        let mut hash_array = [0u8; 32];
+        hash_array.copy_from_slice(&hash_bytes);
+        let payment_hash = PaymentHash(hash_array);
+
+        // Check if payment is in Held status
+        let payment_info = unlocked_state.inbound_payments().get(&payment_hash).cloned();
+        match payment_info {
+            Some(info) => {
+                if info.status != HTLCStatus::Held {
+                    return Err(APIError::InvalidInvoice(s!("payment is not in held status")));
+                }
+                if info.invoice_mode != InvoiceMode::Hodl {
+                    return Err(APIError::InvalidInvoice(s!("payment is not a HODL invoice")));
+                }
+            }
+            None => return Err(APIError::UnknownLNInvoice),
+        }
+
+        // Fail the HTLC backwards
+        unlocked_state.channel_manager.fail_htlc_backwards(&payment_hash);
+
+        // Update payment status to Failed using the internal storage
+        let mut inbound = unlocked_state.get_inbound_payments();
+        if let Some(payment) = inbound.payments.get_mut(&payment_hash) {
+            payment.status = HTLCStatus::Failed;
+            payment.updated_at = get_current_timestamp();
+        }
+        drop(inbound);
+
+        tracing::info!(
+            "Successfully cancelled HODL invoice with payment hash {}",
+            payload.payment_hash
+        );
+
+        Ok(Json(CancelInvoiceResponse { success: true }))
     })
     .await
 }
@@ -3528,6 +3775,8 @@ pub(crate) async fn send_payment(
                     created_at,
                     updated_at: created_at,
                     payee_pubkey: offer.issuer_signing_pubkey().ok_or(APIError::InvalidInvoice(s!("missing signing pubkey")))?,
+                    invoice_mode: InvoiceMode::Standard,
+                    claim_deadline: None,
                 },
             )?;
 
@@ -3606,6 +3855,8 @@ pub(crate) async fn send_payment(
                     created_at,
                     updated_at: created_at,
                     payee_pubkey: invoice.get_payee_pub_key(),
+                    invoice_mode: InvoiceMode::Standard,
+                    claim_deadline: None,
                 },
             )?;
             let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());

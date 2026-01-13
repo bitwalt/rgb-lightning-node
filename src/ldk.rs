@@ -98,7 +98,7 @@ use crate::disk::{
 };
 use crate::error::APIError;
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
-use crate::routes::{HTLCStatus, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT};
+use crate::routes::{HTLCStatus, InvoiceMode, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT};
 use crate::swap::SwapData;
 use crate::utils::{
     check_port_is_available, connect_peer_if_necessary, do_connect_peer, get_current_timestamp,
@@ -127,6 +127,8 @@ pub(crate) struct PaymentInfo {
     pub(crate) created_at: u64,
     pub(crate) updated_at: u64,
     pub(crate) payee_pubkey: PublicKey,
+    pub(crate) invoice_mode: InvoiceMode,
+    pub(crate) claim_deadline: Option<u32>,
 }
 
 impl_writeable_tlv_based!(PaymentInfo, {
@@ -137,6 +139,8 @@ impl_writeable_tlv_based!(PaymentInfo, {
     (8, created_at, required),
     (10, updated_at, required),
     (12, payee_pubkey, required),
+    (14, invoice_mode, (default_value, InvoiceMode::Standard)),
+    (16, claim_deadline, option),
 });
 
 pub(crate) struct InboundPaymentInfoStorage {
@@ -331,6 +335,8 @@ impl UnlockedAppState {
                     created_at,
                     updated_at: created_at,
                     payee_pubkey,
+                    invoice_mode: InvoiceMode::Standard,
+                    claim_deadline: None,
                 });
             }
         }
@@ -670,8 +676,8 @@ async fn handle_ldk_events(
             payment_hash,
             purpose,
             amount_msat,
-            receiver_node_id: _,
-            claim_deadline: _,
+            receiver_node_id,
+            claim_deadline,
             onion_fields: _,
             counterparty_skimmed_fee_msat: _,
             receiving_channel_ids: _,
@@ -694,9 +700,45 @@ async fn handle_ldk_events(
                 } => payment_preimage,
                 PaymentPurpose::SpontaneousPayment(preimage) => Some(preimage),
             };
-            unlocked_state
-                .channel_manager
-                .claim_funds(payment_preimage.unwrap());
+
+            // Check if this is a HODL invoice
+            let payment_info = unlocked_state.inbound_payments().get(&payment_hash).cloned();
+            let is_hodl = payment_info.as_ref().map(|p| p.invoice_mode == InvoiceMode::Hodl).unwrap_or(false);
+
+            if is_hodl {
+                // For HODL invoices, update status to Held but don't claim yet
+                tracing::info!(
+                    "HODL invoice detected for payment hash {}, holding payment",
+                    payment_hash
+                );
+                let payment_secret = match purpose {
+                    PaymentPurpose::Bolt11InvoicePayment { payment_secret, .. } => Some(payment_secret),
+                    PaymentPurpose::Bolt12OfferPayment { payment_secret, .. } => Some(payment_secret),
+                    PaymentPurpose::Bolt12RefundPayment { payment_secret, .. } => Some(payment_secret),
+                    PaymentPurpose::SpontaneousPayment(_) => None,
+                };
+                unlocked_state.upsert_inbound_payment(
+                    payment_hash,
+                    HTLCStatus::Held,
+                    payment_preimage,
+                    payment_secret,
+                    Some(amount_msat),
+                    receiver_node_id.unwrap(),
+                );
+                // Update claim_deadline
+                if let Some(deadline) = claim_deadline {
+                    let mut inbound = unlocked_state.get_inbound_payments();
+                    if let Some(payment) = inbound.payments.get_mut(&payment_hash) {
+                        payment.claim_deadline = Some(deadline);
+                    }
+                    unlocked_state.save_inbound_payments(inbound);
+                }
+            } else {
+                // Standard invoice - claim immediately
+                unlocked_state
+                    .channel_manager
+                    .claim_funds(payment_preimage.unwrap());
+            }
         }
         Event::PaymentClaimed {
             payment_hash,
