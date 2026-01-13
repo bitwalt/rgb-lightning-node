@@ -29,6 +29,10 @@ async fn hodl_invoice_basic_flow() {
     )
     .await;
 
+    // Wait for channels to be usable
+    wait_for_usable_channels(node1_addr, 1).await;
+    wait_for_usable_channels(node2_addr, 1).await;
+
     // Create a HODL invoice on node1
     let amt_msat = 100000;
     let payload = HodlInvoiceRequest {
@@ -155,6 +159,8 @@ async fn hodl_invoice_basic_flow() {
     let status = check_invoice_status(node1_addr, &hodl_res2.invoice).await;
     assert_eq!(status, InvoiceStatus::Succeeded);
     println!("✓ Invoice is in Succeeded status");
+
+    shutdown(&[node1_addr, node2_addr]).await;
 }
 
 #[serial_test::serial]
@@ -183,6 +189,10 @@ async fn hodl_invoice_cancel_flow() {
         None,
     )
     .await;
+
+    // Wait for channels to be usable
+    wait_for_usable_channels(node1_addr, 1).await;
+    wait_for_usable_channels(node2_addr, 1).await;
 
     // Create a HODL invoice
     let payload = HodlInvoiceRequest {
@@ -241,6 +251,8 @@ async fn hodl_invoice_cancel_flow() {
     let status = check_invoice_status(node1_addr, &hodl_res.invoice).await;
     assert_eq!(status, InvoiceStatus::Failed);
     println!("✓ Invoice is in Failed status after cancellation");
+
+    shutdown(&[node1_addr, node2_addr]).await;
 }
 
 #[serial_test::serial]
@@ -280,6 +292,8 @@ async fn hodl_invoice_with_custom_hash() {
     // Verify invoice was created successfully
     let status = check_invoice_status(node1_addr, &hodl_res.invoice).await;
     assert_eq!(status, InvoiceStatus::Pending);
+
+    shutdown(&[node1_addr]).await;
 }
 
 #[serial_test::serial]
@@ -327,6 +341,8 @@ async fn hodl_invoice_error_settle_non_held() {
     // Should fail because invoice is not in Held status
     assert_eq!(res.status(), reqwest::StatusCode::BAD_REQUEST);
     println!("✓ Correctly rejected settle attempt on non-held invoice");
+
+    shutdown(&[node1_addr]).await;
 }
 
 #[serial_test::serial]
@@ -405,6 +421,8 @@ async fn hodl_invoice_error_invalid_preimage() {
     // Should fail because preimage doesn't match hash
     assert_eq!(res.status(), reqwest::StatusCode::BAD_REQUEST);
     println!("✓ Correctly rejected invalid preimage");
+
+    shutdown(&[node1_addr, node2_addr]).await;
 }
 
 #[serial_test::serial]
@@ -504,6 +522,8 @@ async fn hodl_invoice_vs_standard_invoice() {
     let status = check_invoice_status(node1_addr, &hodl_invoice.invoice).await;
     assert_eq!(status, InvoiceStatus::Held);
     println!("✓ HODL invoice correctly held (not auto-claimed)");
+
+    shutdown(&[node1_addr, node2_addr]).await;
 }
 
 // Helper function to check invoice status
