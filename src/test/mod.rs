@@ -21,24 +21,25 @@ use crate::error::APIErrorResponse;
 use crate::ldk::FEE_RATE;
 use crate::routes::{
     AddressResponse, AssetBalanceRequest, AssetBalanceResponse, AssetCFA, AssetNIA, AssetUDA,
-    Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse, ChangePasswordRequest,
-    Channel, CloseChannelRequest, ConnectPeerRequest, CreateUtxosRequest, DecodeLNInvoiceRequest,
-    DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest, DecodeRGBInvoiceResponse,
-    DisconnectPeerRequest, EmptyResponse, FailTransfersRequest, FailTransfersResponse,
-    GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest, GetChannelIdResponse,
-    GetPaymentRequest, GetPaymentResponse, GetSwapRequest, GetSwapResponse, HTLCStatus,
-    InitRequest, InitResponse, InvoiceStatus, InvoiceStatusRequest, InvoiceStatusResponse,
-    IssueAssetCFARequest, IssueAssetCFAResponse, IssueAssetNIARequest, IssueAssetNIAResponse,
-    IssueAssetUDARequest, IssueAssetUDAResponse, KeysendRequest, KeysendResponse, LNInvoiceRequest,
-    LNInvoiceResponse, ListAssetsRequest, ListAssetsResponse, ListChannelsResponse,
-    ListPaymentsResponse, ListPeersResponse, ListSwapsResponse, ListTransactionsRequest,
-    ListTransactionsResponse, ListTransfersRequest, ListTransfersResponse, ListUnspentsRequest,
-    ListUnspentsResponse, MakerExecuteRequest, MakerInitRequest, MakerInitResponse,
-    NetworkInfoResponse, NodeInfoResponse, OpenChannelRequest, OpenChannelResponse, Payment, Peer,
-    PostAssetMediaResponse, RefreshRequest, RestoreRequest, RevokeTokenRequest, RgbInvoiceRequest,
-    RgbInvoiceResponse, SendAssetRequest, SendAssetResponse, SendBtcRequest, SendBtcResponse,
-    SendPaymentRequest, SendPaymentResponse, Swap, SwapStatus, TakerRequest, Transaction, Transfer,
-    UnlockRequest, Unspent, WitnessData,
+    Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse, CancelInvoiceRequest,
+    CancelInvoiceResponse, ChangePasswordRequest, Channel, CloseChannelRequest, ConnectPeerRequest,
+    CreateUtxosRequest, DecodeLNInvoiceRequest, DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest,
+    DecodeRGBInvoiceResponse, DisconnectPeerRequest, EmptyResponse, FailTransfersRequest,
+    FailTransfersResponse, GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest,
+    GetChannelIdResponse, GetPaymentRequest, GetPaymentResponse, GetSwapRequest, GetSwapResponse,
+    HTLCStatus, HodlInvoiceRequest, HodlInvoiceResponse, InitRequest, InitResponse, InvoiceStatus,
+    InvoiceStatusRequest, InvoiceStatusResponse, IssueAssetCFARequest, IssueAssetCFAResponse,
+    IssueAssetNIARequest, IssueAssetNIAResponse, IssueAssetUDARequest, IssueAssetUDAResponse,
+    KeysendRequest, KeysendResponse, LNInvoiceRequest, LNInvoiceResponse, ListAssetsRequest,
+    ListAssetsResponse, ListChannelsResponse, ListPaymentsResponse, ListPeersResponse,
+    ListSwapsResponse, ListTransactionsRequest, ListTransactionsResponse, ListTransfersRequest,
+    ListTransfersResponse, ListUnspentsRequest, ListUnspentsResponse, MakerExecuteRequest,
+    MakerInitRequest, MakerInitResponse, NetworkInfoResponse, NodeInfoResponse, OpenChannelRequest,
+    OpenChannelResponse, Payment, Peer, PostAssetMediaResponse, RefreshRequest, RestoreRequest,
+    RevokeTokenRequest, RgbInvoiceRequest, RgbInvoiceResponse, SendAssetRequest, SendAssetResponse,
+    SendBtcRequest, SendBtcResponse, SendPaymentRequest, SendPaymentResponse, SettleInvoiceRequest,
+    SettleInvoiceResponse, Swap, SwapStatus, TakerRequest, Transaction, Transfer, UnlockRequest,
+    Unspent, WitnessData,
 };
 use crate::utils::{hex_str_to_vec, ELECTRUM_URL_REGTEST, PROXY_ENDPOINT_LOCAL};
 
@@ -1806,6 +1807,7 @@ mod concurrent_btc_payments;
 mod concurrent_openchannel;
 mod fail_transfers;
 mod getchannelid;
+mod hodl_invoice;
 mod htlc_amount_checks;
 mod invoice;
 mod issue;

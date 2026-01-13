@@ -609,7 +609,7 @@ pub(crate) struct InitResponse {
     pub(crate) mnemonic: String,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub(crate) enum InvoiceStatus {
     Pending,
     Succeeded,
