@@ -439,6 +439,18 @@ pub(crate) struct ConnectPeerRequest {
 }
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct CreateOfferRequest {
+    pub(crate) amt_msat: Option<u64>,
+    pub(crate) description: Option<String>,
+    pub(crate) expiry_sec: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct CreateOfferResponse {
+    pub(crate) offer: String,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct CreateUtxosRequest {
     pub(crate) up_to: bool,
     pub(crate) num: Option<u8>,
@@ -1521,6 +1533,46 @@ pub(crate) async fn connect_peer(
         }
 
         Ok(Json(EmptyResponse {}))
+    })
+    .await
+}
+
+pub(crate) async fn create_offer(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<CreateOfferRequest>, APIError>,
+) -> Result<Json<CreateOfferResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        let mut builder = unlocked_state
+            .channel_manager
+            .create_offer_builder()
+            .map_err(|e| APIError::FailedOfferCreation(format!("{e:?}")))?;
+
+        if let Some(description) = payload.description {
+            builder = builder.description(description);
+        }
+
+        if let Some(amt_msat) = payload.amt_msat {
+            builder = builder.amount_msats(amt_msat);
+        }
+
+        if let Some(expiry_sec) = payload.expiry_sec {
+            let expiry = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                + Duration::from_secs(expiry_sec as u64);
+            builder = builder.absolute_expiry(expiry);
+        }
+
+        let offer = builder
+            .build()
+            .map_err(|e| APIError::FailedOfferCreation(format!("{e:?}")))?;
+
+        Ok(Json(CreateOfferResponse {
+            offer: offer.to_string(),
+        }))
     })
     .await
 }

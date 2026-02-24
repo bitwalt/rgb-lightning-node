@@ -22,7 +22,8 @@ use crate::ldk::FEE_RATE;
 use crate::routes::{
     AddressResponse, AssetBalanceRequest, AssetBalanceResponse, AssetCFA, AssetNIA, AssetUDA,
     Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse, ChangePasswordRequest,
-    Channel, CloseChannelRequest, ConnectPeerRequest, CreateUtxosRequest, DecodeLNInvoiceRequest,
+    Channel, CloseChannelRequest, ConnectPeerRequest, CreateOfferRequest, CreateOfferResponse,
+    CreateUtxosRequest, DecodeLNInvoiceRequest,
     DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest, DecodeRGBInvoiceResponse,
     DisconnectPeerRequest, EmptyResponse, FailTransfersRequest, FailTransfersResponse,
     GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest, GetChannelIdResponse,
@@ -1794,6 +1795,7 @@ pub fn mock_fee(fee: u32) -> u32 {
 
 mod authentication;
 mod backup_and_restore;
+mod bolt12;
 mod close_coop_nobtc_acceptor;
 mod close_coop_other_side;
 mod close_coop_standard;
