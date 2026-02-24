@@ -240,6 +240,9 @@ pub enum APIError {
     #[error("Network error: {0}")]
     Network(String),
 
+    #[error("No invoice string available for this transfer")]
+    NoInvoiceString,
+
     #[error("The network of the given bitcoind ({0}) doesn't match the node's chain ({1})")]
     NetworkMismatch(String, BitcoinNetwork),
 
@@ -488,6 +491,7 @@ impl IntoResponse for APIError {
             | APIError::MinFeeNotMet(_)
             | APIError::NetworkMismatch(_, _)
             | APIError::NoAvailableUtxos
+            | APIError::NoInvoiceString
             | APIError::NoRoute
             | APIError::NotInitialized
             | APIError::OpenChannelInProgress

@@ -820,6 +820,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EmptyResponse'
+  /fetchrgbinvoice:
+    post:
+      tags:
+        - RGB
+      summary: Fetch a stored RGB invoice
+      description: Restore the full RGB invoice string for a previously generated invoice by its batch transfer index
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FetchRgbInvoiceRequest'
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RgbInvoiceResponse'
   /rgbinvoice:
     post:
       tags:
@@ -2093,6 +2111,18 @@ components:
         settled:
           type: boolean
           example: false
+    FetchRgbInvoiceRequest:
+      type: object
+      required:
+        - batch_transfer_idx
+      properties:
+        batch_transfer_idx:
+          type: integer
+          example: 1
+        asset_id:
+          type: string
+          nullable: true
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
     RgbInvoiceRequest:
       type: object
       properties:

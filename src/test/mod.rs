@@ -25,7 +25,7 @@ use crate::routes::{
     Channel, CloseChannelRequest, ConnectPeerRequest, CreateUtxosRequest, DecodeLNInvoiceRequest,
     DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest, DecodeRGBInvoiceResponse,
     DeleteTransfersRequest, DeleteTransfersResponse, DisconnectPeerRequest, EmptyResponse,
-    FailTransfersRequest, FailTransfersResponse,
+    FailTransfersRequest, FailTransfersResponse, FetchRgbInvoiceRequest,
     GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest, GetChannelIdResponse,
     GetPaymentRequest, GetPaymentResponse, GetSwapRequest, GetSwapResponse, HTLCStatus,
     InitRequest, InitResponse, InvoiceStatus, InvoiceStatusRequest, InvoiceStatusResponse,
@@ -1387,6 +1387,31 @@ async fn rgb_invoice_status(
         .unwrap()
 }
 
+async fn fetch_rgb_invoice(
+    node_address: SocketAddr,
+    batch_transfer_idx: i32,
+    asset_id: Option<String>,
+) -> RgbInvoiceResponse {
+    println!(
+        "fetching RGB invoice for batch_transfer_idx {batch_transfer_idx} from node {node_address}"
+    );
+    let payload = FetchRgbInvoiceRequest {
+        batch_transfer_idx,
+        asset_id,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/fetchrgbinvoice"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<RgbInvoiceResponse>()
+        .await
+        .unwrap()
+}
+
 async fn send_asset(
     node_address: SocketAddr,
     asset_id: &str,
@@ -1887,6 +1912,7 @@ mod swap_roundtrip_multihop_asset_asset;
 mod swap_roundtrip_multihop_buy;
 mod swap_roundtrip_multihop_sell;
 mod swap_roundtrip_sell;
+mod fetch_rgb_invoice;
 mod rgb_invoice_status;
 mod upload_asset_media;
 mod vanilla_payment_on_rgb_channel;

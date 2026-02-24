@@ -946,6 +946,12 @@ pub(crate) struct RgbInvoiceRequest {
 }
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct FetchRgbInvoiceRequest {
+    pub(crate) batch_transfer_idx: i32,
+    pub(crate) asset_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct RgbInvoiceStatusRequest {
     pub(crate) batch_transfer_idx: i32,
     pub(crate) asset_id: Option<String>,
@@ -3426,6 +3432,32 @@ pub(crate) async fn rgb_invoice_status(
             .ok_or(APIError::BatchTransferNotFound)?;
 
         Ok(Json(map_transfer(transfer)))
+    })
+    .await
+}
+
+pub(crate) async fn fetch_rgb_invoice(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<FetchRgbInvoiceRequest>, APIError>,
+) -> Result<Json<RgbInvoiceResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        let transfers = unlocked_state.rgb_list_transfers_opt(payload.asset_id)?;
+        let transfer = transfers
+            .into_iter()
+            .find(|t| t.batch_transfer_idx == payload.batch_transfer_idx)
+            .ok_or(APIError::BatchTransferNotFound)?;
+
+        let invoice = transfer.invoice_string.ok_or(APIError::NoInvoiceString)?;
+
+        Ok(Json(RgbInvoiceResponse {
+            recipient_id: transfer.recipient_id.unwrap_or_default(),
+            invoice,
+            expiration_timestamp: transfer.expiration,
+            batch_transfer_idx: transfer.batch_transfer_idx,
+        }))
     })
     .await
 }
