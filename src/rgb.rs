@@ -61,6 +61,15 @@ impl UnlockedAppState {
             .create_utxos(up_to, num, size, fee_rate, skip_sync)
     }
 
+    pub(crate) fn rgb_delete_transfers(
+        &self,
+        batch_transfer_idx: Option<i32>,
+        no_asset_only: bool,
+    ) -> Result<bool, RgbLibError> {
+        self.rgb_wallet_wrapper
+            .delete_transfers(batch_transfer_idx, no_asset_only)
+    }
+
     pub(crate) fn rgb_fail_transfers(
         &self,
         batch_transfer_idx: Option<i32>,
@@ -175,6 +184,13 @@ impl UnlockedAppState {
         asset_id: String,
     ) -> Result<Vec<Transfer>, RgbLibError> {
         self.rgb_wallet_wrapper.list_transfers(asset_id)
+    }
+
+    pub(crate) fn rgb_list_transfers_opt(
+        &self,
+        asset_id: Option<String>,
+    ) -> Result<Vec<Transfer>, RgbLibError> {
+        self.rgb_wallet_wrapper.list_transfers_opt(asset_id)
     }
 
     pub(crate) fn rgb_list_unspents(&self, skip_sync: bool) -> Result<Vec<Unspent>, RgbLibError> {
@@ -365,6 +381,15 @@ impl RgbLibWalletWrapper {
         )
     }
 
+    pub(crate) fn delete_transfers(
+        &self,
+        batch_transfer_idx: Option<i32>,
+        no_asset_only: bool,
+    ) -> Result<bool, RgbLibError> {
+        self.get_rgb_wallet()
+            .delete_transfers(batch_transfer_idx, no_asset_only)
+    }
+
     pub(crate) fn fail_transfers(
         &self,
         batch_transfer_idx: Option<i32>,
@@ -493,6 +518,13 @@ impl RgbLibWalletWrapper {
 
     pub(crate) fn list_transfers(&self, asset_id: String) -> Result<Vec<Transfer>, RgbLibError> {
         self.get_rgb_wallet().list_transfers(Some(asset_id))
+    }
+
+    pub(crate) fn list_transfers_opt(
+        &self,
+        asset_id: Option<String>,
+    ) -> Result<Vec<Transfer>, RgbLibError> {
+        self.get_rgb_wallet().list_transfers(asset_id)
     }
 
     pub(crate) fn list_unspents(&self, skip_sync: bool) -> Result<Vec<Unspent>, RgbLibError> {

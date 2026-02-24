@@ -24,7 +24,8 @@ use crate::routes::{
     Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse, ChangePasswordRequest,
     Channel, CloseChannelRequest, ConnectPeerRequest, CreateUtxosRequest, DecodeLNInvoiceRequest,
     DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest, DecodeRGBInvoiceResponse,
-    DisconnectPeerRequest, EmptyResponse, FailTransfersRequest, FailTransfersResponse,
+    DeleteTransfersRequest, DeleteTransfersResponse, DisconnectPeerRequest, EmptyResponse,
+    FailTransfersRequest, FailTransfersResponse,
     GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest, GetChannelIdResponse,
     GetPaymentRequest, GetPaymentResponse, GetSwapRequest, GetSwapResponse, HTLCStatus,
     InitRequest, InitResponse, InvoiceStatus, InvoiceStatusRequest, InvoiceStatusResponse,
@@ -36,7 +37,8 @@ use crate::routes::{
     ListUnspentsResponse, MakerExecuteRequest, MakerInitRequest, MakerInitResponse,
     NetworkInfoResponse, NodeInfoResponse, OpenChannelRequest, OpenChannelResponse, Payment, Peer,
     PostAssetMediaResponse, RefreshRequest, RestoreRequest, RevokeTokenRequest, RgbInvoiceRequest,
-    RgbInvoiceResponse, SendAssetRequest, SendAssetResponse, SendBtcRequest, SendBtcResponse,
+    RgbInvoiceResponse, RgbInvoiceStatusRequest, SendAssetRequest, SendAssetResponse,
+    SendBtcRequest, SendBtcResponse,
     SendPaymentRequest, SendPaymentResponse, Swap, SwapStatus, TakerRequest, Transaction, Transfer,
     UnlockRequest, Unspent, WitnessData,
 };
@@ -476,6 +478,28 @@ async fn fail_transfers(node_address: SocketAddr, batch_transfer_idx: Option<i32
     _check_response_is_ok(res)
         .await
         .json::<FailTransfersResponse>()
+        .await
+        .unwrap()
+        .transfers_changed
+}
+
+async fn delete_transfers(node_address: SocketAddr, batch_transfer_idx: Option<i32>) -> bool {
+    println!(
+        "deleting transfers, batch_transfer_idx {batch_transfer_idx:?} from node {node_address}"
+    );
+    let payload = DeleteTransfersRequest {
+        batch_transfer_idx,
+        no_asset_only: false,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/deletetransfers"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<DeleteTransfersResponse>()
         .await
         .unwrap()
         .transfers_changed
@@ -1337,6 +1361,32 @@ async fn rgb_invoice_with_assignment(
         .unwrap()
 }
 
+async fn rgb_invoice_status(
+    node_address: SocketAddr,
+    batch_transfer_idx: i32,
+    asset_id: Option<String>,
+) -> Transfer {
+    println!(
+        "getting RGB invoice status for batch_transfer_idx {batch_transfer_idx} from node {node_address}"
+    );
+    let payload = RgbInvoiceStatusRequest {
+        batch_transfer_idx,
+        asset_id,
+        skip_sync: false,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/rgbinvoicestatus"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<Transfer>()
+        .await
+        .unwrap()
+}
+
 async fn send_asset(
     node_address: SocketAddr,
     asset_id: &str,
@@ -1804,6 +1854,7 @@ mod close_force_other_side;
 mod close_force_standard;
 mod concurrent_btc_payments;
 mod concurrent_openchannel;
+mod delete_transfers;
 mod fail_transfers;
 mod getchannelid;
 mod htlc_amount_checks;
@@ -1836,5 +1887,6 @@ mod swap_roundtrip_multihop_asset_asset;
 mod swap_roundtrip_multihop_buy;
 mod swap_roundtrip_multihop_sell;
 mod swap_roundtrip_sell;
+mod rgb_invoice_status;
 mod upload_asset_media;
 mod vanilla_payment_on_rgb_channel;

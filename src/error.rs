@@ -42,6 +42,9 @@ pub enum APIError {
     #[error("Cannot estimate fees")]
     CannotEstimateFees,
 
+    #[error("Batch transfer cannot be deleted")]
+    CannotDeleteBatchTransfer,
+
     #[error("Batch transfer cannot be set to failed status")]
     CannotFailBatchTransfer,
 
@@ -321,6 +324,7 @@ impl From<RgbLibError> for APIError {
             RgbLibError::AssetNotFound { .. } => APIError::UnknownContractId,
             RgbLibError::BatchTransferNotFound { .. } => APIError::BatchTransferNotFound,
             RgbLibError::CannotEstimateFees => APIError::CannotEstimateFees,
+            RgbLibError::CannotDeleteBatchTransfer => APIError::CannotDeleteBatchTransfer,
             RgbLibError::CannotFailBatchTransfer => APIError::CannotFailBatchTransfer,
             RgbLibError::EmptyFile { .. } => APIError::MediaFileEmpty,
             RgbLibError::FailedBdkSync { details } => APIError::FailedBdkSync(details),
@@ -464,6 +468,7 @@ impl IntoResponse for APIError {
             | APIError::AuthenticationDisabled
             | APIError::BatchTransferNotFound
             | APIError::CannotCloseChannel(_)
+            | APIError::CannotDeleteBatchTransfer
             | APIError::CannotEstimateFees
             | APIError::CannotFailBatchTransfer
             | APIError::ChangingState

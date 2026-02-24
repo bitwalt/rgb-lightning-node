@@ -483,6 +483,17 @@ pub(crate) struct DecodeRGBInvoiceResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct DeleteTransfersRequest {
+    pub(crate) batch_transfer_idx: Option<i32>,
+    pub(crate) no_asset_only: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct DeleteTransfersResponse {
+    pub(crate) transfers_changed: bool,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct DisconnectPeerRequest {
     pub(crate) peer_pubkey: String,
 }
@@ -935,6 +946,13 @@ pub(crate) struct RgbInvoiceRequest {
 }
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct RgbInvoiceStatusRequest {
+    pub(crate) batch_transfer_idx: i32,
+    pub(crate) asset_id: Option<String>,
+    pub(crate) skip_sync: bool,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct RgbInvoiceResponse {
     pub(crate) recipient_id: String,
     pub(crate) invoice: String,
@@ -1123,6 +1141,7 @@ pub(crate) enum TransactionType {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Transfer {
     pub(crate) idx: i32,
+    pub(crate) batch_transfer_idx: i32,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
     pub(crate) status: TransferStatus,
@@ -1135,6 +1154,7 @@ pub(crate) struct Transfer {
     pub(crate) change_utxo: Option<String>,
     pub(crate) expiration: Option<i64>,
     pub(crate) transport_endpoints: Vec<TransferTransportEndpoint>,
+    pub(crate) invoice_string: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -1252,6 +1272,47 @@ impl AppState {
     async fn update_unlocked_app_state(&self, updated: Option<Arc<UnlockedAppState>>) {
         let mut unlocked_app_state = self.get_unlocked_app_state().await;
         *unlocked_app_state = updated;
+    }
+}
+
+fn map_transfer(transfer: rgb_lib::wallet::Transfer) -> Transfer {
+    Transfer {
+        idx: transfer.idx,
+        batch_transfer_idx: transfer.batch_transfer_idx,
+        created_at: transfer.created_at,
+        updated_at: transfer.updated_at,
+        status: match transfer.status {
+            rgb_lib::TransferStatus::WaitingCounterparty => TransferStatus::WaitingCounterparty,
+            rgb_lib::TransferStatus::WaitingConfirmations => TransferStatus::WaitingConfirmations,
+            rgb_lib::TransferStatus::Settled => TransferStatus::Settled,
+            rgb_lib::TransferStatus::Failed => TransferStatus::Failed,
+        },
+        requested_assignment: transfer.requested_assignment.map(|a| a.into()),
+        assignments: transfer.assignments.into_iter().map(|a| a.into()).collect(),
+        kind: match transfer.kind {
+            rgb_lib::TransferKind::Issuance => TransferKind::Issuance,
+            rgb_lib::TransferKind::ReceiveBlind => TransferKind::ReceiveBlind,
+            rgb_lib::TransferKind::ReceiveWitness => TransferKind::ReceiveWitness,
+            rgb_lib::TransferKind::Send => TransferKind::Send,
+            rgb_lib::TransferKind::Inflation => TransferKind::Inflation,
+        },
+        txid: transfer.txid,
+        recipient_id: transfer.recipient_id,
+        receive_utxo: transfer.receive_utxo.map(|u| u.to_string()),
+        change_utxo: transfer.change_utxo.map(|u| u.to_string()),
+        expiration: transfer.expiration,
+        transport_endpoints: transfer
+            .transport_endpoints
+            .iter()
+            .map(|tte| TransferTransportEndpoint {
+                endpoint: tte.endpoint.clone(),
+                transport_type: match tte.transport_type {
+                    rgb_lib::TransportType::JsonRpc => TransportType::JsonRpc,
+                },
+                used: tte.used,
+            })
+            .collect(),
+        invoice_string: transfer.invoice_string,
     }
 }
 
@@ -1673,6 +1734,29 @@ pub(crate) async fn fail_transfers(
         .unwrap()?;
 
         Ok(Json(FailTransfersResponse { transfers_changed }))
+    })
+    .await
+}
+
+pub(crate) async fn delete_transfers(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<DeleteTransfersRequest>, APIError>,
+) -> Result<Json<DeleteTransfersResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        let unlocked_state_copy = unlocked_state.clone();
+        let transfers_changed = tokio::task::spawn_blocking(move || {
+            unlocked_state_copy.rgb_delete_transfers(
+                payload.batch_transfer_idx,
+                payload.no_asset_only,
+            )
+        })
+        .await
+        .unwrap()?;
+
+        Ok(Json(DeleteTransfersResponse { transfers_changed }))
     })
     .await
 }
@@ -2430,44 +2514,7 @@ pub(crate) async fn list_transfers(
 
     let mut transfers = vec![];
     for transfer in unlocked_state.rgb_list_transfers(payload.asset_id)? {
-        transfers.push(Transfer {
-            idx: transfer.idx,
-            created_at: transfer.created_at,
-            updated_at: transfer.updated_at,
-            status: match transfer.status {
-                rgb_lib::TransferStatus::WaitingCounterparty => TransferStatus::WaitingCounterparty,
-                rgb_lib::TransferStatus::WaitingConfirmations => {
-                    TransferStatus::WaitingConfirmations
-                }
-                rgb_lib::TransferStatus::Settled => TransferStatus::Settled,
-                rgb_lib::TransferStatus::Failed => TransferStatus::Failed,
-            },
-            requested_assignment: transfer.requested_assignment.map(|a| a.into()),
-            assignments: transfer.assignments.into_iter().map(|a| a.into()).collect(),
-            kind: match transfer.kind {
-                rgb_lib::TransferKind::Issuance => TransferKind::Issuance,
-                rgb_lib::TransferKind::ReceiveBlind => TransferKind::ReceiveBlind,
-                rgb_lib::TransferKind::ReceiveWitness => TransferKind::ReceiveWitness,
-                rgb_lib::TransferKind::Send => TransferKind::Send,
-                rgb_lib::TransferKind::Inflation => TransferKind::Inflation,
-            },
-            txid: transfer.txid,
-            recipient_id: transfer.recipient_id,
-            receive_utxo: transfer.receive_utxo.map(|u| u.to_string()),
-            change_utxo: transfer.change_utxo.map(|u| u.to_string()),
-            expiration: transfer.expiration,
-            transport_endpoints: transfer
-                .transport_endpoints
-                .iter()
-                .map(|tte| TransferTransportEndpoint {
-                    endpoint: tte.endpoint.clone(),
-                    transport_type: match tte.transport_type {
-                        rgb_lib::TransportType::JsonRpc => TransportType::JsonRpc,
-                    },
-                    used: tte.used,
-                })
-                .collect(),
-        })
+        transfers.push(map_transfer(transfer));
     }
     Ok(Json(ListTransfersResponse { transfers }))
 }
@@ -3353,6 +3400,32 @@ pub(crate) async fn rgb_invoice(
             expiration_timestamp: receive_data.expiration_timestamp,
             batch_transfer_idx: receive_data.batch_transfer_idx,
         }))
+    })
+    .await
+}
+
+pub(crate) async fn rgb_invoice_status(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<RgbInvoiceStatusRequest>, APIError>,
+) -> Result<Json<Transfer>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+
+        if !payload.skip_sync {
+            let unlocked_state_copy = unlocked_state.clone();
+            tokio::task::spawn_blocking(move || unlocked_state_copy.rgb_refresh(false))
+                .await
+                .unwrap()?;
+        }
+
+        let transfers = unlocked_state.rgb_list_transfers_opt(payload.asset_id)?;
+        let transfer = transfers
+            .into_iter()
+            .find(|t| t.batch_transfer_idx == payload.batch_transfer_idx)
+            .ok_or(APIError::BatchTransferNotFound)?;
+
+        Ok(Json(map_transfer(transfer)))
     })
     .await
 }
