@@ -3,6 +3,7 @@ use crate::routes::{BitcoinNetwork, TransactionType, TransferKind, TransferStatu
 use super::*;
 
 const TEST_DIR_BASE: &str = "tmp/payment/";
+const SHORT_EXPIRY_SEC: u32 = 1;
 
 #[serial_test::serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -273,4 +274,116 @@ async fn same_invoice_twice() {
 
     let decoded = decode_ln_invoice(node1_addr, &invoice).await;
     wait_for_ln_payment(node1_addr, &decoded.payment_hash, HTLCStatus::Succeeded).await;
+}
+
+/// Regression test: inbound `Pending` payments whose invoices have expired must be transitioned
+/// to `Failed` on node restart. Before the fix, they accumulated indefinitely in `listpayments`.
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[traced_test]
+async fn expired_inbound_payment_failed_on_restart() {
+    initialize();
+
+    let test_dir_base = format!("{TEST_DIR_BASE}expired_inbound_payment_failed_on_restart/");
+    let test_dir_node1 = format!("{test_dir_base}node1");
+    let test_dir_node2 = format!("{test_dir_base}node2");
+    let (node1_addr, _) = start_node(&test_dir_node1, NODE1_PEER_PORT, false).await;
+    let (node2_addr, _) = start_node(&test_dir_node2, NODE2_PEER_PORT, false).await;
+
+    fund_and_create_utxos(node1_addr, None).await;
+    fund_and_create_utxos(node2_addr, None).await;
+
+    let asset_id = issue_asset_nia(node1_addr).await.asset_id;
+    let node2_pubkey = node_info(node2_addr).await.pubkey;
+
+    open_channel(
+        node1_addr,
+        &node2_pubkey,
+        Some(NODE2_PEER_PORT),
+        None,
+        Some(3500000),
+        Some(600),
+        Some(&asset_id),
+    )
+    .await;
+
+    // Create several invoices with a very short expiry that will NOT be paid.
+    // These are the ones that reproduce the "stuck Pending" scenario observed in production.
+    let LNInvoiceResponse { invoice: invoice1 } =
+        ln_invoice(node2_addr, Some(50000), None, None, SHORT_EXPIRY_SEC).await;
+    let LNInvoiceResponse { invoice: invoice2 } =
+        ln_invoice(node2_addr, Some(100000), None, None, SHORT_EXPIRY_SEC).await;
+    let LNInvoiceResponse { invoice: invoice3 } =
+        ln_invoice(node2_addr, None, None, None, SHORT_EXPIRY_SEC).await;
+
+    let decoded1 = decode_ln_invoice(node2_addr, &invoice1).await;
+    let decoded2 = decode_ln_invoice(node2_addr, &invoice2).await;
+    let decoded3 = decode_ln_invoice(node2_addr, &invoice3).await;
+
+    // Verify all three start as Pending on the receiver node.
+    let payments_before = list_payments(node2_addr).await;
+    let pending_before: Vec<_> = payments_before
+        .iter()
+        .filter(|p| {
+            p.inbound
+                && matches!(p.status, HTLCStatus::Pending)
+                && [
+                    decoded1.payment_hash.as_str(),
+                    decoded2.payment_hash.as_str(),
+                    decoded3.payment_hash.as_str(),
+                ]
+                .contains(&p.payment_hash.as_str())
+        })
+        .collect();
+    assert_eq!(
+        pending_before.len(),
+        3,
+        "expected all 3 unpaid invoices to be Pending before restart"
+    );
+
+    // Wait for the invoices to expire before restarting.
+    tokio::time::sleep(std::time::Duration::from_secs(SHORT_EXPIRY_SEC as u64 + 1)).await;
+
+    // Restart node2 — fail_inbound_pending_payments() should fire on unlock.
+    shutdown(&[node2_addr]).await;
+    let (node2_addr, _) = start_node(&test_dir_node2, NODE2_PEER_PORT, true).await;
+
+    // All three expired invoices must now be Failed.
+    let payments_after = list_payments(node2_addr).await;
+
+    for hash in [
+        decoded1.payment_hash.as_str(),
+        decoded2.payment_hash.as_str(),
+        decoded3.payment_hash.as_str(),
+    ] {
+        let payment = payments_after
+            .iter()
+            .find(|p| p.payment_hash == hash)
+            .unwrap_or_else(|| panic!("payment {hash} not found after restart"));
+        assert_eq!(
+            payment.status,
+            HTLCStatus::Failed,
+            "expired inbound payment {hash} should be Failed after restart, got {:?}",
+            payment.status
+        );
+    }
+
+    // Sanity: no new Pending inbound payments should have appeared.
+    let still_pending: Vec<_> = payments_after
+        .iter()
+        .filter(|p| {
+            p.inbound
+                && matches!(p.status, HTLCStatus::Pending)
+                && [
+                    decoded1.payment_hash.as_str(),
+                    decoded2.payment_hash.as_str(),
+                    decoded3.payment_hash.as_str(),
+                ]
+                .contains(&p.payment_hash.as_str())
+        })
+        .collect();
+    assert!(
+        still_pending.is_empty(),
+        "found expired inbound payments still Pending after restart: {still_pending:?}"
+    );
 }
