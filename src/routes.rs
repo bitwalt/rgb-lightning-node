@@ -1736,6 +1736,7 @@ pub(crate) async fn get_payment(
 ) -> Result<Json<GetPaymentResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    unlocked_state.fail_inbound_pending_payments();
 
     let payment_hash_vec = hex_str_to_vec(&payload.payment_hash);
     if payment_hash_vec.is_none() || payment_hash_vec.as_ref().unwrap().len() != 32 {
@@ -2074,6 +2075,7 @@ pub(crate) async fn keysend(
                 created_at,
                 updated_at: created_at,
                 payee_pubkey: dest_pubkey,
+                expires_at: None,
             },
         )?;
         if let Some((contract_id, rgb_amount)) = rgb_payment {
@@ -2281,6 +2283,7 @@ pub(crate) async fn list_payments(
 ) -> Result<Json<ListPaymentsResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    unlocked_state.fail_inbound_pending_payments();
 
     let inbound_payments = unlocked_state.inbound_payments();
     let outbound_payments = unlocked_state.outbound_payments();
@@ -2564,6 +2567,7 @@ pub(crate) async fn ln_invoice(
                 created_at,
                 updated_at: created_at,
                 payee_pubkey: unlocked_state.channel_manager.get_our_node_id(),
+                expires_at: Some(created_at + payload.expiry_sec as u64),
             },
         );
 
@@ -3501,6 +3505,7 @@ pub(crate) async fn send_payment(
                     created_at,
                     updated_at: created_at,
                     payee_pubkey: offer.issuer_signing_pubkey().ok_or(APIError::InvalidInvoice(s!("missing signing pubkey")))?,
+                    expires_at: None,
                 },
             )?;
 
@@ -3579,6 +3584,7 @@ pub(crate) async fn send_payment(
                     created_at,
                     updated_at: created_at,
                     payee_pubkey: invoice.get_payee_pub_key(),
+                    expires_at: None,
                 },
             )?;
             let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());

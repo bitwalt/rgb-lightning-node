@@ -127,6 +127,9 @@ pub(crate) struct PaymentInfo {
     pub(crate) created_at: u64,
     pub(crate) updated_at: u64,
     pub(crate) payee_pubkey: PublicKey,
+    /// Unix timestamp at which the invoice expires. `None` for outbound payments and for inbound
+    /// payments created before this field was introduced (those will never be auto-failed).
+    pub(crate) expires_at: Option<u64>,
 }
 
 impl_writeable_tlv_based!(PaymentInfo, {
@@ -137,6 +140,7 @@ impl_writeable_tlv_based!(PaymentInfo, {
     (8, created_at, required),
     (10, updated_at, required),
     (12, payee_pubkey, required),
+    (14, expires_at, option),
 });
 
 pub(crate) struct InboundPaymentInfoStorage {
@@ -283,6 +287,31 @@ impl UnlockedAppState {
         }
     }
 
+    /// On startup, mark any inbound `Pending` payment whose invoice has already expired as
+    /// `Failed`. Invoices that pre-date the `expires_at` field (i.e. `expires_at` is `None`)
+    /// are left untouched to avoid incorrectly failing old payments.
+    pub(crate) fn fail_inbound_pending_payments(&self) {
+        let now = get_current_timestamp();
+        let mut inbound = self.get_inbound_payments();
+        let mut failed = false;
+        for (_, payment_info) in inbound
+            .payments
+            .iter_mut()
+            .filter(|(_, i)| matches!(i.status, HTLCStatus::Pending))
+        {
+            if let Some(expires_at) = payment_info.expires_at {
+                if now > expires_at {
+                    payment_info.status = HTLCStatus::Failed;
+                    payment_info.updated_at = now;
+                    failed = true;
+                }
+            }
+        }
+        if failed {
+            self.save_inbound_payments(inbound);
+        }
+    }
+
     pub(crate) fn inbound_payments(&self) -> LdkHashMap<PaymentHash, PaymentInfo> {
         self.get_inbound_payments().payments.clone()
     }
@@ -334,6 +363,7 @@ impl UnlockedAppState {
                     created_at,
                     updated_at: created_at,
                     payee_pubkey,
+                    expires_at: None,
                 });
             }
         }
@@ -2094,6 +2124,7 @@ pub(crate) async fn start_ldk(
         })
         .collect::<Vec<PaymentId>>();
     unlocked_state.fail_outbound_pending_payments(recent_payments_payment_ids);
+    unlocked_state.fail_inbound_pending_payments();
 
     // Handle LDK Events
     let unlocked_state_copy = Arc::clone(&unlocked_state);
