@@ -1283,15 +1283,15 @@ async fn handle_ldk_events(
                 .await
         }
         Event::ConnectionNeeded { node_id, addresses } => {
+            let static_state = Arc::clone(&static_state);
             tokio::spawn(async move {
                 for address in addresses {
-                    if let Ok(sockaddrs) = address.to_socket_addrs() {
-                        for addr in sockaddrs {
-                            let pm = Arc::clone(&unlocked_state.peer_manager);
-                            if connect_peer_if_necessary(node_id, addr, pm).await.is_ok() {
-                                return;
-                            }
-                        }
+                    let pm = Arc::clone(&unlocked_state.peer_manager);
+                    if connect_peer_if_necessary(node_id, address, pm, Arc::clone(&static_state))
+                        .await
+                        .is_ok()
+                    {
+                        return;
                     }
                 }
             });
@@ -2169,6 +2169,7 @@ pub(crate) async fn start_ldk(
     let connect_pm = Arc::clone(&peer_manager);
     let peer_data_path = ldk_data_dir.join(CHANNEL_PEER_DATA);
     let stop_connect = Arc::clone(&stop_processing);
+    let reconnect_static_state = Arc::clone(&static_state);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2187,9 +2188,13 @@ pub(crate) async fn start_ldk(
                         }
                         for (pubkey, peer_addr) in info.iter() {
                             if *pubkey == node_id {
-                                let _ =
-                                    do_connect_peer(*pubkey, *peer_addr, Arc::clone(&connect_pm))
-                                        .await;
+                                let _ = do_connect_peer(
+                                    *pubkey,
+                                    peer_addr.clone(),
+                                    Arc::clone(&connect_pm),
+                                    Arc::clone(&reconnect_static_state),
+                                )
+                                .await;
                             }
                         }
                     }

@@ -1,6 +1,7 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
 use chrono::Utc;
+use lightning::ln::msgs::SocketAddress;
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringDecayParameters};
 use lightning::util::hash_tables::new_hash_map;
 use lightning::util::logger::{Logger, Record};
@@ -9,7 +10,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -76,7 +76,7 @@ impl Logger for FilesystemLogger {
 pub(crate) fn persist_channel_peer(
     path: &Path,
     pubkey: &PublicKey,
-    address: &SocketAddr,
+    address: &SocketAddress,
 ) -> Result<(), APIError> {
     let pubkey = pubkey.to_string();
     let peer_info = if path.exists() {
@@ -125,7 +125,7 @@ pub(crate) fn delete_channel_peer(path: &Path, pubkey: String) -> Result<(), API
 
 pub(crate) fn read_channel_peer_data(
     path: &Path,
-) -> Result<HashMap<PublicKey, SocketAddr>, APIError> {
+) -> Result<HashMap<PublicKey, SocketAddress>, APIError> {
     let mut peer_data = HashMap::new();
     if !path.exists() {
         return Ok(HashMap::new());

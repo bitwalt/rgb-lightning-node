@@ -3,6 +3,7 @@ use bitcoin::io;
 use bitcoin::secp256k1::PublicKey;
 use futures::Future;
 use lightning::ln::channel_state::ChannelDetails;
+use lightning::ln::msgs::SocketAddress;
 use lightning::ln::types::ChannelId;
 use lightning::routing::router::{
     Payee, PaymentParameters, Route, RouteHint, RouteParameters, Router as _,
@@ -20,14 +21,16 @@ use std::{
     collections::HashSet,
     fmt::Write,
     fs,
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs},
     path::Path,
     path::PathBuf,
+    pin::Pin,
     str::FromStr,
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime},
 };
 use tokio::sync::{Mutex as TokioMutex, MutexGuard as TokioMutexGuard};
+use tokio_socks::tcp::Socks5Stream;
 use tokio_util::sync::CancellationToken;
 
 use crate::ldk::{ChannelIdsMap, Router};
@@ -90,6 +93,8 @@ pub(crate) struct StaticState {
     pub(crate) ldk_data_dir: PathBuf,
     pub(crate) logger: Arc<FilesystemLogger>,
     pub(crate) max_media_upload_size_mb: u16,
+    pub(crate) tor_proxy: Option<SocketAddr>,
+    pub(crate) tor_skip_proxy_for_clearnet_targets: bool,
 }
 
 pub(crate) struct UnlockedAppState {
@@ -231,38 +236,62 @@ pub(crate) fn encrypt_and_save_mnemonic(
 
 pub(crate) async fn connect_peer_if_necessary(
     pubkey: PublicKey,
-    address: SocketAddr,
+    address: SocketAddress,
     peer_manager: Arc<PeerManager>,
+    static_state: Arc<StaticState>,
 ) -> Result<(), APIError> {
     for peer_details in peer_manager.list_peers() {
         if peer_details.counterparty_node_id == pubkey {
             return Ok(());
         }
     }
-    do_connect_peer(pubkey, address, peer_manager).await?;
+    do_connect_peer(pubkey, address.clone(), peer_manager, static_state).await?;
     tracing::info!("connected to peer (pubkey: {pubkey}, addr: {address})");
     Ok(())
 }
 
 pub(crate) async fn do_connect_peer(
     pubkey: PublicKey,
-    address: SocketAddr,
+    address: SocketAddress,
     peer_manager: Arc<PeerManager>,
+    static_state: Arc<StaticState>,
 ) -> Result<(), APIError> {
-    match lightning_net_tokio::connect_outbound(Arc::clone(&peer_manager), pubkey, address).await {
-        Some(connection_closed_future) => {
-            let mut connection_closed_future = Box::pin(connection_closed_future);
-            loop {
-                tokio::select! {
-                    _ = &mut connection_closed_future => return Err(APIError::FailedPeerConnection),
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {},
-                };
-                if peer_manager.peer_by_node_id(&pubkey).is_some() {
-                    return Ok(());
-                }
-            }
+    let mut connection_closed_future: Pin<Box<dyn Future<Output = ()> + Send>> =
+        if should_connect_via_tor(&address, &static_state) {
+            let proxy_addr = static_state.tor_proxy.expect("tor checked above");
+            let (target_host, target_port) = socket_address_target(&address)?;
+            let stream = tokio::time::timeout(
+                Duration::from_secs(10),
+                Socks5Stream::connect(proxy_addr, (target_host.as_str(), target_port)),
+            )
+            .await
+            .map_err(|_| APIError::FailedPeerConnection)?
+            .map_err(|_| APIError::FailedPeerConnection)?;
+            Box::pin(lightning_net_tokio::setup_outbound(
+                Arc::clone(&peer_manager),
+                pubkey,
+                stream.into_inner().into_std().unwrap(),
+            ))
+        } else {
+            let socket_addr = socket_address_to_socket_addr(&address)?;
+            let connection = lightning_net_tokio::connect_outbound(
+                Arc::clone(&peer_manager),
+                pubkey,
+                socket_addr,
+            )
+            .await
+            .ok_or(APIError::FailedPeerConnection)?;
+            Box::pin(connection)
+        };
+
+    loop {
+        tokio::select! {
+            _ = &mut connection_closed_future => return Err(APIError::FailedPeerConnection),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+        };
+        if peer_manager.peer_by_node_id(&pubkey).is_some() {
+            return Ok(());
         }
-        None => Err(APIError::FailedPeerConnection),
     }
 }
 
@@ -319,18 +348,14 @@ where
 
 pub(crate) fn parse_peer_info(
     peer_pubkey_and_ip_addr: String,
-) -> Result<(PublicKey, Option<SocketAddr>), APIError> {
+) -> Result<(PublicKey, Option<SocketAddress>), APIError> {
     let mut pubkey_and_addr = peer_pubkey_and_ip_addr.split('@');
     let pubkey = pubkey_and_addr.next();
 
     let peer_addr = if let Some(peer_addr_str) = pubkey_and_addr.next() {
-        let peer_addr = peer_addr_str.to_socket_addrs().map(|mut r| r.next());
-        if peer_addr.is_err() || peer_addr.as_ref().unwrap().is_none() {
-            return Err(APIError::InvalidPeerInfo(s!(
-                "couldn't parse pubkey@host:port into a socket address"
-            )));
-        }
-        peer_addr.unwrap()
+        Some(SocketAddress::from_str(peer_addr_str).map_err(|_| {
+            APIError::InvalidPeerInfo(s!("couldn't parse pubkey@host:port into a peer address"))
+        })?)
     } else {
         None
     };
@@ -359,6 +384,8 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
         ldk_data_dir,
         logger,
         max_media_upload_size_mb: args.max_media_upload_size_mb,
+        tor_proxy: args.tor_proxy,
+        tor_skip_proxy_for_clearnet_targets: args.tor_skip_proxy_for_clearnet_targets,
     });
 
     let app_state = Arc::new(AppState {
@@ -378,6 +405,51 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
     }
 
     Ok(app_state)
+}
+
+pub(crate) fn should_connect_via_tor(address: &SocketAddress, static_state: &StaticState) -> bool {
+    if static_state.tor_proxy.is_none() {
+        return false;
+    }
+    if !static_state.tor_skip_proxy_for_clearnet_targets {
+        return true;
+    }
+    matches!(
+        address,
+        SocketAddress::OnionV2(_) | SocketAddress::OnionV3 { .. }
+    )
+}
+
+pub(crate) fn socket_address_to_socket_addr(
+    address: &SocketAddress,
+) -> Result<SocketAddr, APIError> {
+    address
+        .to_socket_addrs()
+        .map_err(|_| APIError::FailedPeerConnection)?
+        .next()
+        .ok_or(APIError::FailedPeerConnection)
+}
+
+pub(crate) fn socket_address_target(address: &SocketAddress) -> Result<(String, u16), APIError> {
+    match address {
+        SocketAddress::TcpIpV4 { addr, port } => Ok((Ipv4Addr::from(*addr).to_string(), *port)),
+        SocketAddress::TcpIpV6 { addr, port } => Ok((Ipv6Addr::from(*addr).to_string(), *port)),
+        SocketAddress::Hostname { hostname, port } => Ok((hostname.as_str().to_string(), *port)),
+        SocketAddress::OnionV3 { port, .. } => {
+            let socket_string = address.to_string();
+            let (host, parsed_port) = socket_string
+                .rsplit_once(':')
+                .ok_or(APIError::FailedPeerConnection)?;
+            let parsed_port = parsed_port
+                .parse::<u16>()
+                .map_err(|_| APIError::FailedPeerConnection)?;
+            if parsed_port != *port {
+                return Err(APIError::FailedPeerConnection);
+            }
+            Ok((host.to_string(), *port))
+        }
+        SocketAddress::OnionV2(_) => Err(APIError::FailedPeerConnection),
+    }
 }
 
 pub(crate) fn get_current_timestamp() -> u64 {

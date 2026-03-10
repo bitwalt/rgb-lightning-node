@@ -1,6 +1,6 @@
 use clap::{value_parser, Parser};
 use rgb_lib::BitcoinNetwork;
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use crate::auth::check_auth_args;
 use crate::error::AppError;
@@ -35,6 +35,14 @@ struct Args {
     /// Disable authentication
     #[arg(long, default_value_t = false)]
     disable_authentication: bool,
+
+    /// Address of the Tor SOCKS5 proxy to use for outbound peer connections
+    #[arg(long)]
+    tor_socks: Option<String>,
+
+    /// Bypass the Tor proxy for clearnet peers while still using it for onion peers
+    #[arg(long, default_value_t = false)]
+    tor_skip_proxy_for_clearnet_targets: bool,
 }
 
 pub(crate) struct UserArgs {
@@ -44,6 +52,8 @@ pub(crate) struct UserArgs {
     pub(crate) network: BitcoinNetwork,
     pub(crate) max_media_upload_size_mb: u16,
     pub(crate) root_public_key: Option<biscuit_auth::PublicKey>,
+    pub(crate) tor_proxy: Option<SocketAddr>,
+    pub(crate) tor_skip_proxy_for_clearnet_targets: bool,
 }
 
 pub(crate) fn parse_startup_args() -> Result<UserArgs, AppError> {
@@ -57,6 +67,14 @@ pub(crate) fn parse_startup_args() -> Result<UserArgs, AppError> {
     check_port_is_available(ldk_peer_listening_port)?;
 
     let root_public_key = check_auth_args(args.disable_authentication, args.root_public_key)?;
+    let tor_proxy = args
+        .tor_socks
+        .map(|tor_socks| {
+            tor_socks
+                .parse()
+                .map_err(|_| AppError::InvalidTorProxy(tor_socks))
+        })
+        .transpose()?;
 
     Ok(UserArgs {
         storage_dir_path: args.storage_directory_path,
@@ -65,5 +83,7 @@ pub(crate) fn parse_startup_args() -> Result<UserArgs, AppError> {
         network,
         max_media_upload_size_mb: args.max_media_upload_size_mb,
         root_public_key,
+        tor_proxy,
+        tor_skip_proxy_for_clearnet_targets: args.tor_skip_proxy_for_clearnet_targets,
     })
 }

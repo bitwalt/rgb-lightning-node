@@ -546,6 +546,9 @@ pub enum AppError {
     #[error("The provided root public key is invalid")]
     InvalidRootKey,
 
+    #[error("The provided Tor SOCKS proxy address is invalid: {0}")]
+    InvalidTorProxy(String),
+
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
 

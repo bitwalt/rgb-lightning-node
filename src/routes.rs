@@ -63,7 +63,6 @@ use rgb_lib::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    net::ToSocketAddrs,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -1526,8 +1525,13 @@ pub(crate) async fn connect_peer(
         let (peer_pubkey, peer_addr) = parse_peer_info(payload.peer_pubkey_and_addr.to_string())?;
 
         if let Some(peer_addr) = peer_addr {
-            connect_peer_if_necessary(peer_pubkey, peer_addr, unlocked_state.peer_manager.clone())
-                .await?;
+            connect_peer_if_necessary(
+                peer_pubkey,
+                peer_addr.clone(),
+                unlocked_state.peer_manager.clone(),
+                state.static_state.clone(),
+            )
+            .await?;
             disk::persist_channel_peer(
                 &state.static_state.ldk_data_dir.join(CHANNEL_PEER_DATA),
                 &peer_pubkey,
@@ -3053,16 +3057,6 @@ pub(crate) async fn open_channel(
 
         let peer_data_path = state.static_state.ldk_data_dir.join(CHANNEL_PEER_DATA);
         if peer_addr.is_none() {
-            if let Some(peer) = unlocked_state.peer_manager.peer_by_node_id(&peer_pubkey) {
-                if let Some(socket_address) = peer.socket_address {
-                    if let Ok(mut socket_addrs) = socket_address.to_socket_addrs() {
-                        // assuming there's only one IP address
-                        peer_addr = socket_addrs.next();
-                    }
-                }
-            }
-        }
-        if peer_addr.is_none() {
             let peer_info = disk::read_channel_peer_data(&peer_data_path)?;
             for (pubkey, addr) in peer_info.into_iter() {
                 if pubkey == peer_pubkey {
@@ -3071,9 +3065,19 @@ pub(crate) async fn open_channel(
                 }
             }
         }
+        if peer_addr.is_none() {
+            if let Some(peer) = unlocked_state.peer_manager.peer_by_node_id(&peer_pubkey) {
+                peer_addr = peer.socket_address;
+            }
+        }
         if let Some(peer_addr) = peer_addr {
-            connect_peer_if_necessary(peer_pubkey, peer_addr, unlocked_state.peer_manager.clone())
-                .await?;
+            connect_peer_if_necessary(
+                peer_pubkey,
+                peer_addr.clone(),
+                unlocked_state.peer_manager.clone(),
+                state.static_state.clone(),
+            )
+            .await?;
             disk::persist_channel_peer(&peer_data_path, &peer_pubkey, &peer_addr)?;
         } else {
             return Err(APIError::InvalidPeerInfo(s!(

@@ -67,6 +67,8 @@ impl Default for UserArgs {
             ldk_peer_listening_port: 9735,
             max_media_upload_size_mb: 3,
             root_public_key: None,
+            tor_proxy: None,
+            tor_skip_proxy_for_clearnet_targets: false,
         }
     }
 }
@@ -142,18 +144,27 @@ async fn start_daemon(
     root_public_key: Option<biscuit_auth::PublicKey>,
     keep_node_dir: bool,
 ) -> SocketAddr {
-    if !keep_node_dir && Path::new(&node_test_dir).is_dir() {
-        std::fs::remove_dir_all(node_test_dir).unwrap();
-    }
-    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
-    let node_address = listener.local_addr().unwrap();
-    std::fs::create_dir_all(node_test_dir).unwrap();
     let args = UserArgs {
         storage_dir_path: node_test_dir.into(),
         ldk_peer_listening_port: node_peer_port,
         root_public_key,
         ..Default::default()
     };
+    start_daemon_with_args(node_test_dir, keep_node_dir, args).await
+}
+
+async fn start_daemon_with_args(
+    node_test_dir: &str,
+    keep_node_dir: bool,
+    mut args: UserArgs,
+) -> SocketAddr {
+    if !keep_node_dir && Path::new(&node_test_dir).is_dir() {
+        std::fs::remove_dir_all(node_test_dir).unwrap();
+    }
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let node_address = listener.local_addr().unwrap();
+    std::fs::create_dir_all(node_test_dir).unwrap();
+    args.storage_dir_path = node_test_dir.into();
     tokio::spawn(async move {
         let (router, app_state) = app(args).await.unwrap();
         axum::serve(listener, router)
@@ -215,8 +226,24 @@ async fn start_node(
     node_peer_port: u16,
     keep_node_dir: bool,
 ) -> (SocketAddr, String) {
+    start_node_with_args(
+        node_test_dir,
+        node_peer_port,
+        keep_node_dir,
+        UserArgs::default(),
+    )
+    .await
+}
+
+async fn start_node_with_args(
+    node_test_dir: &str,
+    node_peer_port: u16,
+    keep_node_dir: bool,
+    mut args: UserArgs,
+) -> (SocketAddr, String) {
     println!("starting node with peer port {node_peer_port}");
-    let node_address = start_daemon(node_test_dir, node_peer_port, None, keep_node_dir).await;
+    args.ldk_peer_listening_port = node_peer_port;
+    let node_address = start_daemon_with_args(node_test_dir, keep_node_dir, args).await;
 
     let password = format!("{node_test_dir}.{node_peer_port}");
 
@@ -1891,5 +1918,6 @@ mod swap_roundtrip_multihop_asset_asset;
 mod swap_roundtrip_multihop_buy;
 mod swap_roundtrip_multihop_sell;
 mod swap_roundtrip_sell;
+mod tor_openchannel;
 mod upload_asset_media;
 mod vanilla_payment_on_rgb_channel;
