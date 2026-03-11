@@ -1929,6 +1929,9 @@ components:
         asset_id:
           type: string
           example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
+        max_inbound_htlc_value_in_flight_percent_of_channel:
+          type: integer
+          example: 100
         public:
           type: boolean
           example: true

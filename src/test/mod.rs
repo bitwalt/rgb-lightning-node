@@ -1151,6 +1151,38 @@ async fn open_channel_raw(
     temporary_channel_id: Option<&str>,
     with_anchors: bool,
 ) -> Result<Channel, reqwest::StatusCode> {
+    open_channel_raw_with_inflight_limit(
+        node_address,
+        dest_peer_pubkey,
+        dest_peer_port,
+        capacity_sat,
+        push_msat,
+        asset_amount,
+        asset_id,
+        fee_base_msat,
+        fee_proportional_millionths,
+        None,
+        temporary_channel_id,
+        with_anchors,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open_channel_raw_with_inflight_limit(
+    node_address: SocketAddr,
+    dest_peer_pubkey: &str,
+    dest_peer_port: Option<u16>,
+    capacity_sat: Option<u64>,
+    push_msat: Option<u64>,
+    asset_amount: Option<u64>,
+    asset_id: Option<&str>,
+    fee_base_msat: Option<u32>,
+    fee_proportional_millionths: Option<u32>,
+    max_inbound_htlc_value_in_flight_percent_of_channel: Option<u8>,
+    temporary_channel_id: Option<&str>,
+    with_anchors: bool,
+) -> Result<Channel, reqwest::StatusCode> {
     println!(
         "opening channel with {asset_amount:?} of asset {asset_id:?} from node {node_address} \
               to {dest_peer_pubkey}"
@@ -1180,6 +1212,7 @@ async fn open_channel_raw(
         push_msat: push_msat.unwrap_or(0),
         asset_amount,
         asset_id: asset_id.map(|a| a.to_string()),
+        max_inbound_htlc_value_in_flight_percent_of_channel,
         public: true,
         with_anchors,
         fee_base_msat,
@@ -1270,6 +1303,34 @@ async fn open_channel_with_custom_data(
         fee_base_msat,
         fee_proportional_millionths,
         temporary_channel_id,
+        with_anchors,
+    )
+    .await
+    .expect("channel opening should succeed")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open_channel_with_inflight_limit(
+    node_address: SocketAddr,
+    dest_peer_pubkey: &str,
+    dest_peer_port: Option<u16>,
+    capacity_sat: Option<u64>,
+    push_msat: Option<u64>,
+    max_inbound_htlc_value_in_flight_percent_of_channel: u8,
+    with_anchors: bool,
+) -> Channel {
+    open_channel_raw_with_inflight_limit(
+        node_address,
+        dest_peer_pubkey,
+        dest_peer_port,
+        capacity_sat,
+        push_msat,
+        None,
+        None,
+        None,
+        None,
+        Some(max_inbound_htlc_value_in_flight_percent_of_channel),
+        None,
         with_anchors,
     )
     .await

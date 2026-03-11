@@ -133,3 +133,43 @@ async fn htlc_amount_checks_2nodes() {
     assert_eq!(channels_1.len(), 1);
     assert_eq!(channels_2.len(), 1);
 }
+
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[traced_test]
+async fn htlc_amount_checks_2nodes_custom_inflight_limit() {
+    initialize();
+
+    let test_dir_base = format!("{TEST_DIR_BASE}2nodes_custom_inflight_limit/");
+    let test_dir_node1 = format!("{test_dir_base}node1");
+    let test_dir_node2 = format!("{test_dir_base}node2");
+    let (node1_addr, _) = start_node(&test_dir_node1, NODE1_PEER_PORT, false).await;
+    let (node2_addr, _) = start_node(&test_dir_node2, NODE2_PEER_PORT, false).await;
+
+    fund_and_create_utxos(node1_addr, None).await;
+    fund_and_create_utxos(node2_addr, None).await;
+
+    let node2_pubkey = node_info(node2_addr).await.pubkey;
+
+    let _channel = open_channel_with_inflight_limit(
+        node1_addr,
+        &node2_pubkey,
+        Some(NODE2_PEER_PORT),
+        Some(100_000),
+        Some(50_000_000),
+        100,
+        true,
+    )
+    .await;
+
+    let channels_1 = list_channels(node1_addr).await;
+    let channels_2 = list_channels(node2_addr).await;
+    assert_eq!(channels_1.len(), 1);
+    assert_eq!(channels_2.len(), 1);
+
+    // The opener's inbound limit controls payments received by the opener.
+    // Push liquidity to node2 so it can send 20,000,000 msat back to node1.
+    let LNInvoiceResponse { invoice } =
+        ln_invoice(node1_addr, Some(20_000_000), None, None, 900).await;
+    let _ = send_payment(node2_addr, invoice).await;
+}

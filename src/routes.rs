@@ -839,6 +839,7 @@ pub(crate) struct OpenChannelRequest {
     pub(crate) push_msat: u64,
     pub(crate) asset_amount: Option<u64>,
     pub(crate) asset_id: Option<String>,
+    pub(crate) max_inbound_htlc_value_in_flight_percent_of_channel: Option<u8>,
     pub(crate) public: bool,
     pub(crate) with_anchors: bool,
     pub(crate) fee_base_msat: Option<u32>,
@@ -3043,6 +3044,15 @@ pub(crate) async fn open_channel(
                 "Channel push amount cannot be higher than the capacity"
             )));
         }
+        if let Some(max_in_flight_percent) =
+            payload.max_inbound_htlc_value_in_flight_percent_of_channel
+        {
+            if !(1..=100).contains(&max_in_flight_percent) {
+                return Err(APIError::InvalidAmount(s!(
+                    "max inbound HTLC value in flight percent of channel must be between 1 and 100"
+                )));
+            }
+        }
 
         if colored_info.is_some() && !payload.with_anchors {
             return Err(APIError::AnchorsRequired);
@@ -3097,6 +3107,12 @@ pub(crate) async fn open_channel(
             channel_handshake_config: ChannelHandshakeConfig {
                 announce_for_forwarding: payload.public,
                 our_htlc_minimum_msat: HTLC_MIN_MSAT,
+                max_inbound_htlc_value_in_flight_percent_of_channel: payload
+                    .max_inbound_htlc_value_in_flight_percent_of_channel
+                    .unwrap_or(
+                        ChannelHandshakeConfig::default()
+                            .max_inbound_htlc_value_in_flight_percent_of_channel,
+                    ),
                 minimum_depth: MIN_CHANNEL_CONFIRMATIONS as u32,
                 negotiate_anchors_zero_fee_htlc_tx: payload.with_anchors,
                 ..Default::default()
