@@ -701,7 +701,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28f25503fbb646a219a23145ca1a753f7e239232225c661df8353f05faf00116"
 dependencies = [
  "bdk_core",
- "electrum-client 0.23.1",
+ "electrum-client",
 ]
 
 [[package]]
@@ -1267,12 +1267,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chunked_transfer"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
-
-[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1811,23 +1805,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "electrum-client"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c7b1f8783238bb18e6e137875b0a66f3dffe6c7ea84066e05d033cf180b150f"
-dependencies = [
- "bitcoin",
- "byteorder",
- "libc",
- "log",
- "rustls 0.23.29",
- "serde",
- "serde_json",
- "webpki-roots 0.25.4",
- "winapi",
 ]
 
 [[package]]
@@ -2897,19 +2874,6 @@ dependencies = [
  "lightning-liquidity",
  "lightning-rapid-gossip-sync",
  "possiblyrandom",
-]
-
-[[package]]
-name = "lightning-block-sync"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee5069846b07a62aaecdaf25233e067bc69f245b7c8fd00cc9c217053221f875"
-dependencies = [
- "bitcoin",
- "chunked_transfer",
- "lightning",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -4163,13 +4127,12 @@ dependencies = [
  "clap",
  "dircmp",
  "dirs",
- "electrum-client 0.20.0",
+ "electrum-client",
  "futures",
  "hex-conservative 0.3.0",
  "lazy_static",
  "lightning",
  "lightning-background-processor",
- "lightning-block-sync",
  "lightning-dns-resolver",
  "lightning-invoice",
  "lightning-macros 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",

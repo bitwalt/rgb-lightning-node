@@ -1,7 +1,7 @@
 mod args;
 mod auth;
 mod backup;
-mod bitcoind;
+mod indexer;
 mod disk;
 mod error;
 mod ldk;

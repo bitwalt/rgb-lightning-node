@@ -29,6 +29,7 @@ use lightning::rgb_utils::{
 };
 use lightning::routing::gossip;
 use lightning::routing::gossip::{NodeId, P2PGossipSync};
+use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::DefaultRouter;
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 use lightning::sign::{
@@ -45,13 +46,9 @@ use lightning::util::persist::{
 };
 use lightning::util::ser::{ReadableArgs, Writeable};
 use lightning::util::sweep as ldk_sweep;
-use lightning::{chain, impl_writeable_tlv_based};
+use lightning::impl_writeable_tlv_based;
 use lightning_background_processor::{process_events_async, GossipSync, NO_LIQUIDITY_MANAGER};
-use lightning_block_sync::gossip::TokioSpawner;
-use lightning_block_sync::init;
-use lightning_block_sync::poll;
-use lightning_block_sync::SpvClient;
-use lightning_block_sync::UnboundedCache;
+use lightning::chain::Confirm;
 use lightning_dns_resolver::OMDomainResolver;
 use lightning_invoice::PaymentSecret;
 use lightning_net_tokio::SocketDescriptor;
@@ -91,7 +88,7 @@ use tokio::runtime::Handle;
 use tokio::sync::watch::Sender;
 use tokio::task::JoinHandle;
 
-use crate::bitcoind::BitcoindClient;
+use crate::indexer::IndexerClient;
 use crate::disk::{
     self, FilesystemLogger, CHANNEL_IDS_FNAME, CHANNEL_PEER_DATA, INBOUND_PAYMENTS_FNAME,
     MAKER_SWAPS_FNAME, OUTBOUND_PAYMENTS_FNAME, OUTPUT_SPENDER_TXES, TAKER_SWAPS_FNAME,
@@ -406,8 +403,8 @@ impl UnlockedAppState {
 pub(crate) type ChainMonitor = chainmonitor::ChainMonitor<
     InMemorySigner,
     Arc<dyn Filter + Send + Sync>,
-    Arc<BitcoindClient>,
-    Arc<BitcoindClient>,
+    Arc<IndexerClient>,
+    Arc<IndexerClient>,
     Arc<FilesystemLogger>,
     Arc<
         MonitorUpdatingPersister<
@@ -415,18 +412,14 @@ pub(crate) type ChainMonitor = chainmonitor::ChainMonitor<
             Arc<FilesystemLogger>,
             Arc<KeysManager>,
             Arc<KeysManager>,
-            Arc<BitcoindClient>,
-            Arc<BitcoindClient>,
+            Arc<IndexerClient>,
+            Arc<IndexerClient>,
         >,
     >,
     Arc<KeysManager>,
 >;
 
-pub(crate) type GossipVerifier = lightning_block_sync::gossip::GossipVerifier<
-    TokioSpawner,
-    Arc<lightning_block_sync::rpc::RpcClient>,
-    Arc<FilesystemLogger>,
->;
+pub(crate) type GossipVerifier = dyn UtxoLookup + Send + Sync;
 
 pub(crate) type PeerManager = LdkPeerManager<
     SocketDescriptor,
@@ -451,7 +444,7 @@ pub(crate) type Router = DefaultRouter<
 >;
 
 pub(crate) type ChannelManager =
-    SimpleArcChannelManager<ChainMonitor, BitcoindClient, BitcoindClient, FilesystemLogger>;
+    SimpleArcChannelManager<ChainMonitor, IndexerClient, IndexerClient, FilesystemLogger>;
 
 pub(crate) type NetworkGraph = gossip::NetworkGraph<Arc<FilesystemLogger>>;
 
@@ -468,7 +461,7 @@ pub(crate) type OnionMessenger = LdkOnionMessenger<
 >;
 
 pub(crate) type BumpTxEventHandler = BumpTransactionEventHandler<
-    Arc<BitcoindClient>,
+    Arc<IndexerClient>,
     Arc<Wallet<Arc<RgbLibWalletWrapper>, Arc<FilesystemLogger>>>,
     Arc<KeysManager>,
     Arc<FilesystemLogger>,
@@ -486,9 +479,9 @@ pub(crate) struct RgbOutputSpender {
 }
 
 pub(crate) type OutputSweeper = ldk_sweep::OutputSweeper<
-    Arc<BitcoindClient>,
+    Arc<IndexerClient>,
     Arc<RgbLibWalletWrapper>,
-    Arc<BitcoindClient>,
+    Arc<IndexerClient>,
     Arc<dyn Filter + Send + Sync>,
     Arc<FilesystemStore>,
     Arc<FilesystemLogger>,
@@ -1511,37 +1504,6 @@ pub(crate) async fn start_ldk(
     let network: Network = bitcoin_network.into();
     let ldk_peer_listening_port = static_state.ldk_peer_listening_port;
 
-    // Initialize our bitcoind client.
-    let bitcoind_client = match BitcoindClient::new(
-        unlock_request.bitcoind_rpc_host.clone(),
-        unlock_request.bitcoind_rpc_port,
-        unlock_request.bitcoind_rpc_username.clone(),
-        unlock_request.bitcoind_rpc_password.clone(),
-        tokio::runtime::Handle::current(),
-        Arc::clone(&logger),
-    )
-    .await
-    {
-        Ok(client) => Arc::new(client),
-        Err(e) => {
-            return Err(APIError::FailedBitcoindConnection(e.to_string()));
-        }
-    };
-
-    // Check that the bitcoind we've connected to is running the network we expect
-    let bitcoind_chain = bitcoind_client.get_blockchain_info().await.chain;
-    if bitcoind_chain
-        != match bitcoin_network {
-            BitcoinNetwork::Mainnet => "main",
-            BitcoinNetwork::Testnet => "test",
-            BitcoinNetwork::Testnet4 => "testnet4",
-            BitcoinNetwork::Regtest => "regtest",
-            BitcoinNetwork::Signet => "signet",
-        }
-    {
-        return Err(APIError::NetworkMismatch(bitcoind_chain, bitcoin_network));
-    }
-
     // RGB setup
     let indexer_url = if let Some(indexer_url) = &unlock_request.indexer_url {
         let indexer_protocol = check_indexer_url(indexer_url, bitcoin_network)?;
@@ -1582,14 +1544,39 @@ pub(crate) async fn start_ldk(
     )
     .expect("able to write");
 
-    // Initialize the FeeEstimator
-    // BitcoindClient implements the FeeEstimator trait, so it'll act as our fee estimator.
-    let fee_estimator = bitcoind_client.clone();
+    // Initialize the IndexerClient, which handles fee estimation, transaction broadcasting,
+    // and provides chain::Filter for monitoring on-chain events.
+    let indexer_client = match IndexerClient::new(
+        indexer_url,
+        tokio::runtime::Handle::current(),
+        Arc::clone(&logger),
+    ) {
+        Ok(client) => Arc::new(client),
+        Err(e) => {
+            return Err(APIError::FailedIndexerConnection(e.to_string()));
+        }
+    };
 
-    // Initialize the BroadcasterInterface
-    // BitcoindClient implements the BroadcasterInterface trait, so it'll act as our transaction
-    // broadcaster.
-    let broadcaster = bitcoind_client.clone();
+    // Verify the indexer is on the expected network by checking the genesis block hash.
+    let expected_genesis = bitcoin::blockdata::constants::genesis_block(network).block_hash();
+    let actual_genesis = {
+        let idx = Arc::clone(&indexer_client);
+        tokio::task::spawn_blocking(move || idx.get_header_at_height(0))
+            .await
+            .map_err(|e| APIError::Unexpected(e.to_string()))?
+            .map_err(|e| APIError::FailedIndexerConnection(e.to_string()))?
+            .block_hash()
+    };
+    if actual_genesis != expected_genesis {
+        return Err(APIError::NetworkMismatch(
+            format!("{actual_genesis}"),
+            bitcoin_network,
+        ));
+    }
+
+    // Initialize the FeeEstimator and BroadcasterInterface via the indexer client.
+    let fee_estimator = indexer_client.clone();
+    let broadcaster = indexer_client.clone();
 
     // Initialize the KeysManager
     // The key seed that we use to derive the node privkey (that corresponds to the node pubkey) and
@@ -1624,13 +1611,13 @@ pub(crate) async fn start_ldk(
         1000,
         Arc::clone(&keys_manager),
         Arc::clone(&keys_manager),
-        Arc::clone(&bitcoind_client),
-        Arc::clone(&bitcoind_client),
+        Arc::clone(&indexer_client),
+        Arc::clone(&indexer_client),
     ));
 
     // Initialize the ChainMonitor
     let chain_monitor: Arc<ChainMonitor> = Arc::new(chainmonitor::ChainMonitor::new(
-        None,
+        Some(Arc::clone(&indexer_client) as Arc<dyn Filter + Send + Sync>),
         Arc::clone(&broadcaster),
         Arc::clone(&logger),
         Arc::clone(&fee_estimator),
@@ -1642,10 +1629,15 @@ pub(crate) async fn start_ldk(
     // Read ChannelMonitor state from disk
     let mut channelmonitors = persister.read_all_channel_monitors_with_updates().unwrap();
 
-    // Poll for the best chain tip, which may be used by the channel manager & spv client
-    let polled_chain_tip = init::validate_best_block_header(bitcoind_client.as_ref())
-        .await
-        .expect("Failed to fetch best block header and best block");
+    // Get the best block from the indexer for initializing the channel manager
+    let (best_height, best_hash) = {
+        let idx = Arc::clone(&indexer_client);
+        tokio::task::spawn_blocking(move || idx.get_best_block_sync())
+            .await
+            .map_err(|e| APIError::Unexpected(e.to_string()))?
+            .map_err(|e| APIError::FailedIndexerConnection(e.to_string()))?
+    };
+    let best_block = BestBlock::new(best_hash, best_height);
 
     // Initialize routing ProbabilisticScorer
     let network_graph_path = ldk_data_dir.join("network_graph");
@@ -1686,7 +1678,7 @@ pub(crate) async fn start_ldk(
         .negotiate_anchors_zero_fee_htlc_tx = true;
     user_config.manually_accept_inbound_channels = true;
     let mut restarting_node = true;
-    let (channel_manager_blockhash, channel_manager) = {
+    let (_channel_manager_blockhash, channel_manager) = {
         if let Ok(f) = fs::File::open(ldk_data_dir.join("manager")) {
             let mut channel_monitor_references = Vec::new();
             for (_, channel_monitor) in channelmonitors.iter() {
@@ -1711,11 +1703,9 @@ pub(crate) async fn start_ldk(
             // We're starting a fresh node.
             restarting_node = false;
 
-            let polled_best_block = polled_chain_tip.to_best_block();
-            let polled_best_block_hash = polled_best_block.block_hash;
             let chain_params = ChainParameters {
                 network,
-                best_block: polled_best_block,
+                best_block,
             };
             let fresh_channel_manager = channelmanager::ChannelManager::new(
                 fee_estimator.clone(),
@@ -1732,7 +1722,7 @@ pub(crate) async fn start_ldk(
                 cur.as_secs() as u32,
                 ldk_data_dir_path.clone(),
             );
-            (polled_best_block_hash, fresh_channel_manager)
+            (best_hash, fresh_channel_manager)
         }
     };
 
@@ -1809,7 +1799,7 @@ pub(crate) async fn start_ldk(
         txes,
         proxy_endpoint: proxy_endpoint.to_string(),
     });
-    let (sweeper_best_block, output_sweeper) = match fs_store.read(
+    let (_sweeper_best_block, output_sweeper) = match fs_store.read(
         OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
         OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
         OUTPUT_SWEEPER_PERSISTENCE_KEY,
@@ -1819,7 +1809,7 @@ pub(crate) async fn start_ldk(
                 channel_manager.current_best_block(),
                 broadcaster.clone(),
                 fee_estimator.clone(),
-                None,
+                Some(Arc::clone(&indexer_client) as Arc<dyn Filter + Send + Sync>),
                 rgb_output_spender,
                 rgb_wallet_wrapper.clone(),
                 fs_store.clone(),
@@ -1831,7 +1821,7 @@ pub(crate) async fn start_ldk(
             let read_args = (
                 broadcaster.clone(),
                 fee_estimator.clone(),
-                None,
+                Some(Arc::clone(&indexer_client) as Arc<dyn Filter + Send + Sync>),
                 rgb_output_spender.clone(),
                 rgb_wallet_wrapper.clone(),
                 fs_store.clone(),
@@ -1844,77 +1834,87 @@ pub(crate) async fn start_ldk(
         Err(e) => panic!("Failed to read OutputSweeper with {e}"),
     };
 
-    // Sync ChannelMonitors, ChannelManager and OutputSweeper to chain tip
-    let mut chain_listener_channel_monitors = Vec::new();
-    let mut cache = UnboundedCache::new();
-    let chain_tip = if restarting_node {
-        let mut chain_listeners = vec![
-            (
-                channel_manager_blockhash,
-                &channel_manager as &(dyn chain::Listen + Send + Sync),
-            ),
-            (
-                sweeper_best_block.block_hash,
-                &output_sweeper as &(dyn chain::Listen + Send + Sync),
-            ),
-        ];
-
-        for (blockhash, channel_monitor) in channelmonitors.drain(..) {
-            let outpoint = channel_monitor.get_funding_txo();
-            chain_listener_channel_monitors.push((
-                blockhash,
-                (
-                    channel_monitor,
-                    broadcaster.clone(),
-                    fee_estimator.clone(),
-                    logger.clone(),
-                ),
-                outpoint,
-            ));
-        }
-
-        for monitor_listener_info in chain_listener_channel_monitors.iter_mut() {
-            chain_listeners.push((
-                monitor_listener_info.0,
-                &monitor_listener_info.1 as &(dyn chain::Listen + Send + Sync),
-            ));
-        }
-
-        let mut attempts = 3;
-        loop {
-            match init::synchronize_listeners(
-                bitcoind_client.as_ref(),
-                network,
-                &mut cache,
-                chain_listeners.clone(),
-            )
-            .await
-            {
-                Ok(res) => break res,
-                Err(e) => {
-                    tracing::error!("Error synchronizing chain: {:?}", e);
-                    attempts -= 1;
-                    if attempts == 0 {
-                        return Err(APIError::FailedBitcoindConnection(
-                            e.into_inner().to_string(),
-                        ));
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
-    } else {
-        polled_chain_tip
-    };
-
-    // Give ChannelMonitors to ChainMonitor
-    for (_, (channel_monitor, _, _, _), _) in chain_listener_channel_monitors {
+    // Give ChannelMonitors to ChainMonitor.
+    // Channel monitors register their watched scripts with the Filter during loading.
+    for (_, channel_monitor) in channelmonitors.drain(..) {
         let channel_id = channel_monitor.channel_id();
         assert_eq!(
             chain_monitor.load_existing_monitor(channel_id, channel_monitor),
             Ok(ChannelMonitorUpdateStatus::Completed)
         );
     }
+
+    // Get the best block header for chain sync
+    let best_header = {
+        let idx = Arc::clone(&indexer_client);
+        tokio::task::spawn_blocking(move || idx.get_header_at_height(best_height))
+            .await
+            .map_err(|e| APIError::Unexpected(e.to_string()))?
+            .map_err(|e| APIError::FailedIndexerConnection(e.to_string()))?
+    };
+
+    // Sync to chain tip using chain::Confirm.
+    // For a restarting node, scan watched scripts for confirmed transactions
+    // that may have been missed while the node was offline.
+    if restarting_node {
+        let watched_scripts = indexer_client.get_watched_scripts();
+        let idx = Arc::clone(&indexer_client);
+
+        // Collect confirmed (txid, height) entries from watched scripts
+        let mut confirmed_entries: Vec<(bitcoin::Txid, u32)> =
+            tokio::task::spawn_blocking(move || {
+                let mut entries = Vec::new();
+                for script in &watched_scripts {
+                    if let Ok(history) = idx.get_script_history(script) {
+                        for item in history {
+                            if item.height > 0 {
+                                entries.push((item.tx_hash, item.height as u32));
+                            }
+                        }
+                    }
+                }
+                entries
+            })
+            .await
+            .map_err(|e| APIError::Unexpected(e.to_string()))?;
+
+        confirmed_entries.sort_by_key(|(_, h)| *h);
+        confirmed_entries.dedup_by_key(|(txid, _)| *txid);
+
+        // Group txids by block height
+        let mut by_height: std::collections::BTreeMap<u32, Vec<bitcoin::Txid>> =
+            std::collections::BTreeMap::new();
+        for (txid, height) in confirmed_entries {
+            by_height.entry(height).or_default().push(txid);
+        }
+
+        // For each block, fetch transactions and notify all chain::Confirm listeners
+        for (height, txids) in by_height {
+            let idx = Arc::clone(&indexer_client);
+            let (header, txs) = tokio::task::spawn_blocking(move || {
+                let header = idx.get_header_at_height(height)?;
+                let txs: Vec<bitcoin::Transaction> = txids
+                    .iter()
+                    .filter_map(|txid| idx.get_tx(txid).ok())
+                    .collect();
+                Ok::<_, std::io::Error>((header, txs))
+            })
+            .await
+            .map_err(|e| APIError::Unexpected(e.to_string()))?
+            .map_err(|e| APIError::FailedIndexerConnection(e.to_string()))?;
+
+            let txdata: Vec<(usize, &bitcoin::Transaction)> =
+                txs.iter().enumerate().collect();
+            channel_manager.transactions_confirmed(&header, &txdata, height);
+            chain_monitor.transactions_confirmed(&header, &txdata, height);
+            output_sweeper.transactions_confirmed(&header, &txdata, height);
+        }
+    }
+
+    // Update all chain::Confirm listeners to the current best block
+    channel_manager.best_block_updated(&best_header, best_height);
+    chain_monitor.best_block_updated(&best_header, best_height);
+    output_sweeper.best_block_updated(&best_header, best_height);
 
     // Optional: Initialize the P2PGossipSync
     let gossip_sync = Arc::new(P2PGossipSync::new(
@@ -1968,15 +1968,6 @@ pub(crate) async fn start_ldk(
         Arc::clone(&keys_manager),
     ));
 
-    // Install a GossipVerifier in in the P2PGossipSync
-    let utxo_lookup = GossipVerifier::new(
-        Arc::clone(&bitcoind_client.bitcoind_rpc_client),
-        TokioSpawner,
-        Arc::clone(&gossip_sync),
-        Arc::clone(&peer_manager),
-    );
-    gossip_sync.add_utxo_lookup(Some(Arc::new(utxo_lookup)));
-
     // ## Running LDK
     // Initialize networking
 
@@ -2004,27 +1995,82 @@ pub(crate) async fn start_ldk(
         }
     });
 
-    // Connect and Disconnect Blocks
+    // Connect and Disconnect Blocks via chain::Confirm polling loop
     let output_sweeper: Arc<OutputSweeper> = Arc::new(output_sweeper);
     let channel_manager_listener = channel_manager.clone();
     let chain_monitor_listener = chain_monitor.clone();
     let output_sweeper_listener = output_sweeper.clone();
-    let bitcoind_block_source = bitcoind_client.clone();
+    let indexer_poller = indexer_client.clone();
     let stop_listen = Arc::clone(&stop_processing);
     tokio::spawn(async move {
-        let chain_poller = poll::ChainPoller::new(bitcoind_block_source.as_ref(), network);
-        let chain_listener = (
-            chain_monitor_listener,
-            &(channel_manager_listener, output_sweeper_listener),
-        );
-        let mut spv_client = SpvClient::new(chain_tip, chain_poller, &mut cache, &chain_listener);
+        let mut last_height = best_height;
         loop {
             if stop_listen.load(Ordering::Acquire) {
                 return;
             }
-            if let Err(e) = spv_client.poll_best_tip().await {
-                tracing::error!("Error while polling best tip: {:?}", e);
+
+            let idx = Arc::clone(&indexer_poller);
+            let poll_result = tokio::task::spawn_blocking(move || idx.get_best_block_sync())
+                .await;
+            let (current_height, _) = match poll_result {
+                Ok(Ok(tip)) => tip,
+                Ok(Err(e)) => {
+                    tracing::error!("Error polling indexer for best block: {:?}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!("Spawn blocking error polling indexer: {:?}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            // Process any new blocks
+            if current_height > last_height {
+                for height in (last_height + 1)..=current_height {
+                    let idx = Arc::clone(&indexer_poller);
+                    let watched_scripts = idx.get_watched_scripts();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let header = idx.get_header_at_height(height)?;
+                        let txs: Vec<bitcoin::Transaction> = watched_scripts
+                            .iter()
+                            .filter_map(|s| idx.get_script_history(s).ok())
+                            .flatten()
+                            .filter(|item| item.height == height as i32)
+                            .filter_map(|item| idx.get_tx(&item.tx_hash).ok())
+                            .collect();
+                        Ok::<_, std::io::Error>((header, txs))
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok((header, txs))) => {
+                            let txdata: Vec<(usize, &bitcoin::Transaction)> =
+                                txs.iter().enumerate().collect();
+                            if !txdata.is_empty() {
+                                channel_manager_listener
+                                    .transactions_confirmed(&header, &txdata, height);
+                                chain_monitor_listener
+                                    .transactions_confirmed(&header, &txdata, height);
+                                output_sweeper_listener
+                                    .transactions_confirmed(&header, &txdata, height);
+                            }
+                            channel_manager_listener.best_block_updated(&header, height);
+                            chain_monitor_listener.best_block_updated(&header, height);
+                            output_sweeper_listener.best_block_updated(&header, height);
+                        }
+                        Ok(Err(e)) => {
+                            tracing::error!("Error fetching block data at height {height}: {e:?}");
+                        }
+                        Err(e) => {
+                            tracing::error!("Spawn blocking error at height {height}: {e:?}");
+                        }
+                    }
+                }
+                last_height = current_height;
             }
+
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });

@@ -57,8 +57,8 @@ pub enum APIError {
     #[error("Failed to sync BDK: {0}")]
     FailedBdkSync(String),
 
-    #[error("Failed to connect to bitcoind client: {0}")]
-    FailedBitcoindConnection(String),
+    #[error("Failed to connect to indexer: {0}")]
+    FailedIndexerConnection(String),
 
     #[error("Failed broadcast: {0}")]
     FailedBroadcast(String),
@@ -237,7 +237,7 @@ pub enum APIError {
     #[error("Network error: {0}")]
     Network(String),
 
-    #[error("The network of the given bitcoind ({0}) doesn't match the node's chain ({1})")]
+    #[error("The network of the given indexer ({0}) doesn't match the node's chain ({1})")]
     NetworkMismatch(String, BitcoinNetwork),
 
     #[error("No uncolored UTXOs are available (hint: call createutxos)")]
@@ -469,7 +469,7 @@ impl IntoResponse for APIError {
             | APIError::ChangingState
             | APIError::DuplicatePayment(_)
             | APIError::FailedBdkSync(_)
-            | APIError::FailedBitcoindConnection(_)
+            | APIError::FailedIndexerConnection(_)
             | APIError::FailedBroadcast(_)
             | APIError::FailedPeerConnection
             | APIError::InsufficientAssets
